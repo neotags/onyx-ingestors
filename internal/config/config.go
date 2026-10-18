@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// Environment variable names read by config.Load.
 const (
 	EnvConfluenceBaseURL  = "CONFLUENCE_BASE_URL"
 	EnvConfluenceAuthType = "CONFLUENCE_AUTH_TYPE" // auto | basic | bearer | scoped

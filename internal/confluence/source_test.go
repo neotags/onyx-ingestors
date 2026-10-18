@@ -90,7 +90,7 @@ func TestStreamStopsAtMaxPages(t *testing.T) {
 
 func TestStreamPropagatesEmitError(t *testing.T) {
 	src := newTestSource(t, pagedTransport(), 2, 0)
-	err := src.Stream(context.Background(), func(doc onyx.Document) error {
+	err := src.Stream(context.Background(), func(_ onyx.Document) error {
 		return errors.New("sink down")
 	})
 	require.Error(t, err)
@@ -99,11 +99,11 @@ func TestStreamPropagatesEmitError(t *testing.T) {
 }
 
 func TestStreamFetchError(t *testing.T) {
-	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	transport := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return cannedResponse(http.StatusBadGateway, "bad gateway"), nil
 	})
 	src := newTestSource(t, transport, 50, 0)
-	err := src.Stream(context.Background(), func(doc onyx.Document) error { return nil })
+	err := src.Stream(context.Background(), func(_ onyx.Document) error { return nil })
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "fetch confluence pages")
 }

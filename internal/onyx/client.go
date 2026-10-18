@@ -45,6 +45,7 @@ type ingestRequest struct {
 // ingestionPath if needed.
 const ingestionPath = "/onyx-api/ingestion"
 
+// Client ingests documents into Onyx via its ingestion API.
 type Client struct {
 	baseURL  string
 	apiKey   string

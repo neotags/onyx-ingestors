@@ -1,8 +1,14 @@
+version: "2"
+
 linters:
+  default: none
   enable:
     - govet
     - errcheck
     - staticcheck
     - unused
-    - gofmt
     - revive
+
+formatters:
+  enable:
+    - gofmt

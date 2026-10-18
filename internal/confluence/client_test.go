@@ -166,7 +166,7 @@ func TestSearchPagesLimitClamp(t *testing.T) {
 }
 
 func TestSearchPagesHTTPError(t *testing.T) {
-	hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	hc := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return cannedResponse(http.StatusInternalServerError, "boom"), nil
 	})}
 
