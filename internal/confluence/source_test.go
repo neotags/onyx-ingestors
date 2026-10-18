@@ -107,3 +107,55 @@ func TestStreamFetchError(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "fetch confluence pages")
 }
+
+func TestMapPageSplitsByHeadings(t *testing.T) {
+	var p Page
+	p.ID = "9"
+	p.Title = "Doc"
+	p.Links.Base = "https://ex.atlassian.net/wiki"
+	p.Links.WebUI = "/x/9"
+	p.Body.Storage.Value = `<p>Intro</p><h1>Alpha</h1><p>A body</p><h2>Beta</h2><p>B body</p>`
+
+	doc := MapPage(p)
+	require.Len(t, doc.Sections, 3)
+	for _, s := range doc.Sections {
+		assert.Equal(t, "https://ex.atlassian.net/wiki/x/9", s.Link)
+	}
+	assert.Equal(t, "Intro", doc.Sections[0].Text)
+	assert.Equal(t, "Alpha\nA body", doc.Sections[1].Text)
+	assert.Equal(t, "Beta\nB body", doc.Sections[2].Text)
+}
+
+func TestMapPagePrefersADF(t *testing.T) {
+	var p Page
+	p.ID = "9"
+	p.Title = "Doc"
+	p.Links.Base = "https://ex.atlassian.net/wiki"
+	p.Links.WebUI = "/x/9"
+	p.Body.Storage.Value = `<p>storage body</p>` // would produce different text
+	p.Body.AtlasDocFormat.Value = `{"type":"doc","content":[
+		{"type":"paragraph","content":[{"type":"text","text":"adf intro"}]},
+		{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"ADF H"}]},
+		{"type":"paragraph","content":[{"type":"text","text":"adf body"}]}
+	]}`
+
+	doc := MapPage(p)
+	require.Len(t, doc.Sections, 2)
+	assert.Equal(t, "adf intro", doc.Sections[0].Text)
+	assert.Equal(t, "ADF H\nadf body", doc.Sections[1].Text)
+	for _, s := range doc.Sections {
+		assert.Equal(t, "https://ex.atlassian.net/wiki/x/9", s.Link)
+	}
+}
+
+func TestMapPageFallsBackToStorage(t *testing.T) {
+	var p Page
+	p.ID = "9"
+	p.Title = "Doc"
+	p.Body.Storage.Value = `<p>storage <b>body</b></p>`
+	// no atlas_doc_format
+
+	doc := MapPage(p)
+	require.Len(t, doc.Sections, 1)
+	assert.Equal(t, "storage body", doc.Sections[0].Text)
+}

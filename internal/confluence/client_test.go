@@ -79,7 +79,7 @@ func TestSearchPagesBasicOK(t *testing.T) {
 		assert.Equal(t, "secret", pass)
 		q := r.URL.Query()
 		for key, want := range map[string]string{
-			"cql": "type=page", "start": "0", "limit": "50", "expand": "body.storage,version",
+			"cql": "type=page", "start": "0", "limit": "50", "expand": "body.atlas_doc_format,body.storage,children.attachment,version",
 		} {
 			assert.Equal(t, want, q.Get(key), "query %s", key)
 		}

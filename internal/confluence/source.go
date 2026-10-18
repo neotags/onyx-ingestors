@@ -60,12 +60,28 @@ func MapPage(page Page) onyx.Document {
 		when := page.Version.When
 		updated = &when
 	}
+	link := page.WebURL()
+	// Prefer the structured ADF payload when present (Confluence Cloud);
+	// fall back to the storage-format HTML splitter otherwise.
+	texts := adfToSections(page.Body.AtlasDocFormat.Value)
+	if texts == nil {
+		texts = splitSections(page.Body.Storage.Value)
+	}
+	sections := make([]onyx.Section, 0, len(texts))
+	for _, txt := range texts {
+		sections = append(sections, onyx.Section{Text: txt, Link: link})
+	}
+	if att := attachmentsText(page); att != "" {
+		if len(sections) < maxSections {
+			sections = append(sections, onyx.Section{Text: att, Link: link})
+		} else {
+			sections[len(sections)-1].Text += "\n\n" + att
+		}
+	}
+
 	return onyx.Document{
-		ID: "confluence-" + page.ID,
-		Sections: []onyx.Section{{
-			Text: htmlToText(page.Body.Storage.Value),
-			Link: page.WebURL(),
-		}},
+		ID:                 "confluence-" + page.ID,
+		Sections:           sections,
 		Source:             "confluence",
 		SemanticIdentifier: page.Title,
 		Metadata: map[string]string{

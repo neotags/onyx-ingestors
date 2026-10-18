@@ -22,7 +22,24 @@ onyx-ingestor version
 Each run searches Confluence with [CQL](https://developer.atlassian.com/cloud/confluence/advanced-searching-using-cql/),
 maps every page to an Onyx ingestion document (title, plain-text body,
 deep link, last-modified timestamp), and pushes it to the configured Onyx
-connector/credential pair. The run stops on the first failed document and
+connector/credential pair. Pages are pre-split into multiple `sections`:
+
+- On Confluence Cloud, the **Atlas Document Format** (`body.atlas_doc_format`)
+  JSON tree is preferred: sections split at heading nodes of level 1-2, with
+  paragraphs, lists, tables, code blocks, and expands rendered as plain text.
+- If ADF is missing (legacy pages or Data Center), the storage-format HTML
+  splitter is used as a fallback (splits at h1/h2 tags).
+
+Output is capped at 64 sections per page so Onyx indexes coherent chunks.
+
+**Attachments**: the Onyx ingestion API is text-only, so binary content is
+never uploaded. Instead, each page's file attachments (via the
+`children.attachment` expansion) are rendered as a trailing `Attachments:`
+section with one line per file — title plus an absolute, authenticated
+download URL — so files remain discoverable in search results and deep-linkable
+in answers (access itself is still enforced by Confluence). Pages with more
+than 25 attachments are truncated (see `TODO(onyx-ingestor)` in
+`internal/confluence/attachments.go`). The run stops on the first failed document and
 prints stats (`seen`/`ingested`/`skipped`/`failed`) on exit.
 
 ## Configuration
@@ -82,7 +99,10 @@ internal/onyx/          Onyx ingestion API client (implements ingest.Sink)
 internal/confluence/
   client.go             Confluence REST client (CQL search, auth modes, pagination)
   source.go             ingest.Source implementation: CQL pagination + page mapping
-  html.go               rough storage-format HTML -> text converter
+  adf.go                Atlas Document Format (JSON) parsing, section splitting, text render
+  attachments.go        attachment list -> trailing text section with download links
+  sections.go           storage HTML -> section splitting at h1/h2 boundaries (fallback)
+  html.go               rough storage-format HTML -> text converter (fallback)
 ```
 
 ## Adding a source
