@@ -45,7 +45,7 @@ func TestIngestPayload(t *testing.T) {
 	var payload map[string]any
 	hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, ingestionPath, r.URL.Path)
+		assert.Equal(t, DefaultIngestionPath, r.URL.Path)
 		assert.Equal(t, "Bearer onyx-key", r.Header.Get("Authorization"))
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
@@ -53,7 +53,7 @@ func TestIngestPayload(t *testing.T) {
 		return cannedResponse(http.StatusOK, "{}"), nil
 	})}
 
-	c := NewClient("https://onyx.example.com", "onyx-key", 12, hc)
+	c := NewClient("https://onyx.example.com", "onyx-key", 12, "", hc)
 	require.NoError(t, c.Ingest(context.Background(), testDocument()))
 
 	assert.Equal(t, float64(12), payload["cc_pair_id"])
@@ -71,7 +71,7 @@ func TestIngestHTTPError(t *testing.T) {
 		return cannedResponse(http.StatusUnauthorized, "unauthorized"), nil
 	})}
 
-	c := NewClient("https://onyx.example.com", "bad-key", 12, hc)
+	c := NewClient("https://onyx.example.com", "bad-key", 12, "", hc)
 	err := c.Ingest(context.Background(), testDocument())
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "401")

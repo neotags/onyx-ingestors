@@ -79,7 +79,7 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 		return err
 	}
 	hc := &http.Client{Timeout: cfg.HTTPTimeout}
-	sink := onyx.NewClient(cfg.OnyxBaseURL, cfg.OnyxAPIKey, cfg.OnyxCCPairID, hc)
+	sink := onyx.NewClient(cfg.OnyxBaseURL, cfg.OnyxAPIKey, cfg.OnyxCCPairID, cfg.OnyxIngestionPath, hc)
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -60,6 +60,7 @@ variables already set in the real environment take precedence.
 | `ONYX_BASE_URL`        | yes      | Onyx server URL, e.g. `https://onyx.example.com`. |
 | `ONYX_API_KEY`         | yes      | Onyx API key (sent as `Authorization: Bearer ...`). |
 | `ONYX_CC_PAIR_ID`      | yes      | Integer ID of the Onyx connector/credential pair to ingest into. |
+| `ONYX_INGESTION_PATH`  | no       | Ingestion endpoint path (default `/onyx-api/ingestion`). Set to `/api/onyx-api/ingestion` when the Onyx chart nginx fronts the API (it only forwards `/api/*`). |
 | `HTTP_TIMEOUT`         | no       | HTTP timeout as Go duration (default `30s`). |
 
 Copy `.env.example` to `.env` for a local template; `.env` is git-ignored

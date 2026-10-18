@@ -21,13 +21,17 @@ type Section struct {
 // Document matches the Onyx ingestion API document payload.
 // TODO(onyx-ingestor): verify this schema against your Onyx version; the
 // ingestion API may add fields over time.
+// The Onyx ingestion model requires every key to be present (null is
+// allowed, absence is not), so no omitempty here.
 type Document struct {
 	ID                 string            `json:"id"`
 	Sections           []Section         `json:"sections"`
 	Source             string            `json:"source"`
 	SemanticIdentifier string            `json:"semantic_identifier"`
-	Metadata           map[string]string `json:"metadata,omitempty"`
+	Metadata           map[string]string `json:"metadata"`
 	DocUpdatedAt       *time.Time        `json:"doc_updated_at"`
+	PrimaryOwners      any               `json:"primary_owners"`
+	SecondaryOwners    any               `json:"secondary_owners"`
 	Title              string            `json:"title"`
 	FromIngestionAPI   bool              `json:"from_ingestion_api"`
 }
@@ -37,32 +41,41 @@ type ingestRequest struct {
 	CCPairID int      `json:"cc_pair_id"`
 }
 
+// DefaultIngestionPath matches the official Onyx ingestion API. Deployments
+// behind the Onyx chart's nginx reverse proxy only forward /api/* to the API
+// server, so those need ONYX_INGESTION_PATH="/api/onyx-api/ingestion".
+const DefaultIngestionPath = "/onyx-api/ingestion"
+
 // Client pushes documents to a single Onyx connector/credential pair
 // over the Onyx ingestion API.
-//
-// TODO(onyx-ingestor): the ingestion endpoint path is "/onyx-api/ingestion"
-// in current Onyx releases; confirm against your deployment and adjust
-// ingestionPath if needed.
-const ingestionPath = "/onyx-api/ingestion"
 
 // Client ingests documents into Onyx via its ingestion API.
 type Client struct {
-	baseURL  string
-	apiKey   string
-	ccPairID int
-	hc       *http.Client
+	baseURL       string
+	apiKey        string
+	ccPairID      int
+	ingestionPath string
+	hc            *http.Client
 }
 
-// NewClient creates a Client scoped to one base URL and CC pair.
-func NewClient(baseURL, apiKey string, ccPairID int, hc *http.Client) *Client {
+// NewClient creates a Client scoped to one base URL and CC pair. Pass an
+// empty ingestionPath to use DefaultIngestionPath.
+func NewClient(baseURL, apiKey string, ccPairID int, ingestionPath string, hc *http.Client) *Client {
 	if hc == nil {
 		hc = http.DefaultClient
 	}
+	if ingestionPath == "" {
+		ingestionPath = DefaultIngestionPath
+	}
+	if !strings.HasPrefix(ingestionPath, "/") {
+		ingestionPath = "/" + ingestionPath
+	}
 	return &Client{
-		baseURL:  strings.TrimRight(baseURL, "/"),
-		apiKey:   apiKey,
-		ccPairID: ccPairID,
-		hc:       hc,
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		apiKey:        apiKey,
+		ccPairID:      ccPairID,
+		ingestionPath: ingestionPath,
+		hc:            hc,
 	}
 }
 
@@ -73,7 +86,7 @@ func (c *Client) Ingest(ctx context.Context, doc Document) error {
 		return fmt.Errorf("serialize document %q: %w", doc.ID, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+ingestionPath, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+c.ingestionPath, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build ingestion request: %w", err)
 	}
