@@ -1,0 +1,17 @@
+title = "onyx-ingestor gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "synthetic fixtures used by tests, docs, and .env.example"
+stopwords = [
+  "super-secret-token",
+  "onyx-secret-key",
+  "scoped-token",
+  "pat-token",
+  "bad-key",
+]
+paths = [
+  '''\.env\.example''',
+]
