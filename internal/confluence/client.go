@@ -206,11 +206,13 @@ func (c *Client) authorize(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.auth.Token)
 }
 
-// SearchPages runs a CQL query and returns one batch of results with page
-// storage bodies and version timestamps. start/limit follow the Confluence
-// offset pagination contract (limit is capped at 100 by Confluence).
+// SearchPages runs a CQL query and returns the first batch of results with
+// page storage bodies and version timestamps (limit is capped at 100 by
+// Confluence). Continue pagination with SearchPageURL: Cloud's scoped-token
+// gateway ignores the start offset entirely and paginates via the opaque
+// cursor embedded in _links.next, so offsets must never be recomputed
+// client-side.
 func (c *Client) SearchPages(ctx context.Context, cql string, start, limit int) (SearchResult, error) {
-	var out SearchResult
 	if limit <= 0 {
 		limit = 100
 	} else if limit > 100 {
@@ -219,7 +221,7 @@ func (c *Client) SearchPages(ctx context.Context, cql string, start, limit int) 
 
 	u, err := url.Parse(c.apiBase() + "/rest/api/content/search")
 	if err != nil {
-		return out, fmt.Errorf("confluence API URL: %w", err)
+		return SearchResult{}, fmt.Errorf("confluence API URL: %w", err)
 	}
 	q := u.Query()
 	q.Set("cql", cql)
@@ -229,8 +231,68 @@ func (c *Client) SearchPages(ctx context.Context, cql string, start, limit int) 
 	// kept as a fallback for legacy pages and Data Center.
 	q.Set("expand", "body.atlas_doc_format,body.storage,children.attachment,version")
 	u.RawQuery = q.Encode()
+	return c.doSearch(ctx, u.String())
+}
+
+// SearchPageURL fetches the next batch of a CQL search by following the
+// relative _links.next URL verbatim. The cursor it carries is the only
+// pagination state Cloud honors on the scoped gateway. Anything that is
+// not a site-relative /rest/ path is refused defensively.
+func (c *Client) SearchPageURL(ctx context.Context, next string) (SearchResult, error) {
+	var out SearchResult
+	if !strings.HasPrefix(next, "/rest/") {
+		return out, fmt.Errorf("refusing non-API next link %q", next)
+	}
+	return c.doSearch(ctx, c.apiBase()+next)
+}
+
+// CountPages returns how many results a CQL query matches, via the legacy
+// /rest/api/search endpoint — the only CQL search API that reports
+// totalSize. It exists purely for pre-run reporting ("N pages to scan")
+// and performs a minimal request (limit=1), so callers should treat an
+// error as non-fatal.
+func (c *Client) CountPages(ctx context.Context, cql string) (int, error) {
+	u, err := url.Parse(c.apiBase() + "/rest/api/search")
+	if err != nil {
+		return 0, fmt.Errorf("confluence API URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("cql", cql)
+	q.Set("limit", "1")
+	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return 0, fmt.Errorf("confluence count request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	c.authorize(req)
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("confluence count: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return 0, fmt.Errorf("confluence count: unexpected status %s: %s",
+			resp.Status, strings.TrimSpace(string(body)))
+	}
+	var out struct {
+		TotalSize int `json:"totalSize"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, fmt.Errorf("confluence count: decode response: %w", err)
+	}
+	return out.TotalSize, nil
+}
+
+// doSearch executes one content-search request and normalizes the response:
+// Cloud puts the base URL on the result envelope, not on each page.
+func (c *Client) doSearch(ctx context.Context, reqURL string) (SearchResult, error) {
+	var out SearchResult
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return out, fmt.Errorf("confluence search request: %w", err)
 	}

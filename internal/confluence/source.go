@@ -3,6 +3,7 @@ package confluence
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"time"
 
@@ -59,6 +60,13 @@ func incrementalCQL(cql string) (string, bool) {
 // Stream paginates the CQL search and emits one Onyx document per page.
 // It stops when emit returns an error, when the incremental cutoff is
 // passed, when maxPages is reached, or when pagination is exhausted.
+//
+// Pagination follows the relative _links.next URL verbatim: Cloud's
+// scoped-token gateway paginates CQL search with an opaque cursor and
+// ignores the start offset, so recomputing offsets client-side just
+// refetches the first batch forever. Already-emitted page IDs are skipped
+// anyway, and a batch with no new pages ends the stream — belt and braces
+// against the index shifting under a live search.
 func (s *Source) Stream(ctx context.Context, emit func(onyx.Document) error) error {
 	pageSize := s.pageSize
 	if pageSize <= 0 {
@@ -68,16 +76,29 @@ func (s *Source) Stream(ctx context.Context, emit func(onyx.Document) error) err
 	if !s.since.IsZero() {
 		cql, earlyStop = incrementalCQL(cql)
 	}
-	start := 0
+	next := ""
+	seenIDs := make(map[string]struct{})
 	for pageNum := 0; ; pageNum++ {
 		if s.maxPages > 0 && pageNum >= s.maxPages {
 			return nil
 		}
-		res, err := s.client.SearchPages(ctx, cql, start, pageSize)
+		var res SearchResult
+		var err error
+		if next == "" {
+			res, err = s.client.SearchPages(ctx, cql, 0, pageSize)
+		} else {
+			res, err = s.client.SearchPageURL(ctx, next)
+		}
 		if err != nil {
 			return fmt.Errorf("fetch confluence pages: %w", err)
 		}
+		newPages := 0
 		for _, page := range res.Results {
+			if _, dup := seenIDs[page.ID]; dup {
+				continue
+			}
+			seenIDs[page.ID] = struct{}{}
+			newPages++
 			if s.tooOld(page) {
 				if earlyStop && page.Version.When.Before(s.since.Add(-scanGrace)) {
 					return nil
@@ -88,8 +109,13 @@ func (s *Source) Stream(ctx context.Context, emit func(onyx.Document) error) err
 				return fmt.Errorf("ingest page %s (%q): %w", page.ID, page.Title, err)
 			}
 		}
-		start += len(res.Results)
-		if len(res.Results) < pageSize || res.Links.Next == "" {
+		next = res.Links.Next
+		if len(res.Results) == 0 || next == "" {
+			return nil
+		}
+		if newPages == 0 {
+			slog.Info("confluence search returned only previously seen pages; stopping pagination",
+				"page_num", pageNum)
 			return nil
 		}
 	}

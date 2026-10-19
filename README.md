@@ -68,6 +68,9 @@ How it works:
   passes the cutoff. Server-side CQL date literals are deliberately not
   used — Confluence parses them in an undocumented tenant/timezone, which
   would silently drop pages.
+- Pagination follows the `_links.next` cursor verbatim. Atlassian's
+  scoped-token gateway (`CONFLUENCE_AUTH_TYPE=scoped`) ignores the `start`
+  offset in CQL search, so offsets are never computed client-side.
 - The checkpoint advances only when the whole run succeeds, so a failed
   page or network error triggers a larger (but still correct) re-scan next
   time. `--dry-run` never touches the checkpoint.
