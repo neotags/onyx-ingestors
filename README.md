@@ -77,6 +77,10 @@ How it works:
 - The checkpoint advances only when the whole run succeeds, so a failed
   page or network error triggers a larger (but still correct) re-scan next
   time. `--dry-run` never touches the checkpoint.
+- Individual documents that fail to ingest (default budget: 10, tune with
+  `--max-failures`, 0 disables) are logged and skipped without aborting
+  the run; any failure leaves the checkpoint unchanged so the next
+  incremental run re-scans them.
 - If your `--cql` already contains `ORDER BY`, ordering is left untouched
   and early stop is disabled (filtering still applies).
 

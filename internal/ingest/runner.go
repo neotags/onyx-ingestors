@@ -27,6 +27,10 @@ type Sink interface {
 // Options controls one ingestion run.
 type Options struct {
 	DryRun bool
+	// MaxFailures tolerates failed documents: up to MaxFailures sink
+	// failures are logged and skipped before the run aborts. Values <= 0
+	// abort on the first failure.
+	MaxFailures int
 }
 
 // progressEvery controls how often in-run progress lines are logged.
@@ -41,7 +45,9 @@ type Stats struct {
 }
 
 // Run streams documents from source into sink until the stream ends, the
-// sink fails, or the context is canceled. The first failure aborts the run.
+// failure budget is exhausted, or the context is canceled. Skipped
+// failures count toward Stats.Failed so callers can refuse to advance
+// checkpoints on dirty runs.
 func Run(ctx context.Context, source Source, sink Sink, opts Options) (Stats, error) {
 	var stats Stats
 	err := source.Stream(ctx, func(doc onyx.Document) error {
@@ -53,6 +59,13 @@ func Run(ctx context.Context, source Source, sink Sink, opts Options) (Stats, er
 		}
 		if err := sink.Ingest(ctx, doc); err != nil {
 			stats.Failed++
+			if stats.Failed <= opts.MaxFailures {
+				slog.Error("document failed; continuing",
+					"doc_id", doc.ID, "title", doc.Title,
+					"failures", stats.Failed, "budget", opts.MaxFailures,
+					"error", err)
+				return nil
+			}
 			return fmt.Errorf("document %q (%q): %w", doc.ID, doc.Title, err)
 		}
 		stats.Ingested++

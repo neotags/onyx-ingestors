@@ -65,7 +65,8 @@ func usage() {
 
 Usage:
   onyx-ingestor sync confluence [--cql CQL] [--page-size N] [--max-pages N] [--dry-run]
-                                [--incremental] [--state-file PATH] [--sync-lookback D]
+                                [--max-failures N] [--incremental] [--state-file PATH]
+                                [--sync-lookback D]
   onyx-ingestor version
 
 Configuration comes from environment variables; see README.md.
@@ -98,6 +99,7 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 		pageSize := fs.Int("page-size", 50, "pages per Confluence API request (max 100)")
 		maxPages := fs.Int("max-pages", 0, "stop after N API requests (0 = no limit)")
 		dryRun := fs.Bool("dry-run", false, "fetch and map pages without calling Onyx")
+		maxFailures := fs.Int("max-failures", 10, "failed documents tolerated before the run aborts (0 = abort on first failure)")
 		inc := fs.Bool("incremental", false, "only sync pages modified since the last successful run")
 		sf := fs.String("state-file", ".onyx-ingestor-state.json", "checkpoint file for --incremental")
 		lookback := fs.Duration("sync-lookback", 2*time.Minute, "overlap subtracted from the last sync time to absorb indexing lag")
@@ -154,6 +156,7 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 			source = confluence.NewIncrementalSource(client, cfg.ConfluenceCQL, since, *pageSize, *maxPages)
 		}
 		opts.DryRun = *dryRun
+		opts.MaxFailures = *maxFailures
 	default:
 		usage()
 		return fmt.Errorf("unsupported source %q: only confluence is implemented", sourceName)
@@ -169,10 +172,16 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 		"failed", stats.Failed,
 		"dry_run", opts.DryRun,
 	)
-	// Advance the checkpoint only after a fully clean run. A failure leaves
-	// the old timestamp, so the next run re-scans the whole window (cheap:
-	// unchanged pages are skipped by Onyx via doc_updated_at).
+	// Advance the checkpoint only after a fully clean run. A failure or a
+	// tolerated-but-failed document leaves the old timestamp, so the next
+	// run re-scans the whole window (cheap: unchanged pages are skipped by
+	// Onyx via doc_updated_at).
 	if err == nil && incremental && !opts.DryRun {
+		if stats.Failed > 0 {
+			slog.Warn("documents failed; checkpoint not advanced",
+				"failed", stats.Failed, "state_file", stateFile)
+			return nil
+		}
 		if serr := ingest.SaveState(stateFile, ingest.State{Source: sourceName, LastSync: syncStarted}); serr != nil {
 			return fmt.Errorf("save sync checkpoint: %w", serr)
 		}
