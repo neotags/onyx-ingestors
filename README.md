@@ -149,7 +149,10 @@ internal/confluence/
 
 ## Adding a source
 
-The pipeline is source-agnostic. To add e.g. Google Drive ingestion:
+The pipeline is source-agnostic. Before designing a new ingestor, read
+[DESIGN_GUIDANCE.md](DESIGN_GUIDANCE.md) — it covers sync modes, retries,
+error handling, and mapping requirements learned from production. To add
+e.g. Google Drive ingestion:
 
 1. Create `internal/gdrive/` with a small API client (`client.go`)
    and a type implementing `ingest.Source` (`Stream(ctx, emit) error`) that
