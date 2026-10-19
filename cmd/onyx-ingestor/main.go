@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 
@@ -64,6 +65,7 @@ func usage() {
 
 Usage:
   onyx-ingestor sync confluence [--cql CQL] [--page-size N] [--max-pages N] [--dry-run]
+                                [--incremental] [--state-file PATH] [--sync-lookback D]
   onyx-ingestor version
 
 Configuration comes from environment variables; see README.md.
@@ -86,6 +88,8 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 
 	var source ingest.Source
 	var opts ingest.Options
+	var incremental bool
+	var stateFile string
 
 	switch sourceName {
 	case "confluence":
@@ -94,9 +98,14 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 		pageSize := fs.Int("page-size", 50, "pages per Confluence API request (max 100)")
 		maxPages := fs.Int("max-pages", 0, "stop after N API requests (0 = no limit)")
 		dryRun := fs.Bool("dry-run", false, "fetch and map pages without calling Onyx")
+		inc := fs.Bool("incremental", false, "only sync pages modified since the last successful run")
+		sf := fs.String("state-file", ".onyx-ingestor-state.json", "checkpoint file for --incremental")
+		lookback := fs.Duration("sync-lookback", 2*time.Minute, "overlap subtracted from the last sync time to absorb indexing lag")
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
+		incremental = *inc
+		stateFile = *sf
 		if *cql != "" {
 			cfg.ConfluenceCQL = *cql
 		}
@@ -121,13 +130,31 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 			return err
 		}
 		slog.Info("confluence auth", "mode", mode.String())
-		source = confluence.NewSource(client, cfg.ConfluenceCQL, *pageSize, *maxPages)
+		since := time.Time{}
+		if incremental {
+			st, err := ingest.LoadState(stateFile)
+			if err != nil {
+				return err
+			}
+			if st.Source == sourceName && !st.LastSync.IsZero() {
+				since = st.LastSync.Add(-*lookback)
+				slog.Info("incremental sync", "since", since.Format(time.RFC3339), "state_file", stateFile)
+			} else {
+				slog.Info("incremental sync: no prior checkpoint, running a full sync to bootstrap", "state_file", stateFile)
+			}
+		}
+		if since.IsZero() {
+			source = confluence.NewSource(client, cfg.ConfluenceCQL, *pageSize, *maxPages)
+		} else {
+			source = confluence.NewIncrementalSource(client, cfg.ConfluenceCQL, since, *pageSize, *maxPages)
+		}
 		opts.DryRun = *dryRun
 	default:
 		usage()
 		return fmt.Errorf("unsupported source %q: only confluence is implemented", sourceName)
 	}
 
+	syncStarted := time.Now().UTC()
 	stats, err := ingest.Run(ctx, source, sink, opts)
 	slog.Info("sync finished",
 		"source", sourceName,
@@ -137,5 +164,13 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 		"failed", stats.Failed,
 		"dry_run", opts.DryRun,
 	)
+	// Advance the checkpoint only after a fully clean run. A failure leaves
+	// the old timestamp, so the next run re-scans the whole window (cheap:
+	// unchanged pages are skipped by Onyx via doc_updated_at).
+	if err == nil && incremental && !opts.DryRun {
+		if serr := ingest.SaveState(stateFile, ingest.State{Source: sourceName, LastSync: syncStarted}); serr != nil {
+			return fmt.Errorf("save sync checkpoint: %w", serr)
+		}
+	}
 	return err
 }

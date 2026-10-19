@@ -16,6 +16,7 @@ bin/onyx-ingestor sync confluence --dry-run
 
 ```text
 onyx-ingestor sync confluence [--cql CQL] [--page-size N] [--max-pages N] [--dry-run]
+                              [--incremental] [--state-file PATH] [--sync-lookback D]
 onyx-ingestor version
 ```
 
@@ -41,6 +42,45 @@ in answers (access itself is still enforced by Confluence). Pages with more
 than 25 attachments are truncated (see `TODO(onyx-ingestor)` in
 `internal/confluence/attachments.go`). The run stops on the first failed document and
 prints stats (`seen`/`ingested`/`skipped`/`failed`) on exit.
+
+## Incremental syncs
+
+`--incremental` syncs only pages modified since the last **successful**
+run, using a checkpoint file (`--state-file`, default
+`.onyx-ingestor-state.json` in the working directory):
+
+```sh
+bin/onyx-ingestor sync confluence --incremental
+```
+
+How it works:
+
+- The first run has no checkpoint and performs a full sync, then records
+  the run start time. Later runs only stream pages whose
+  `version.when` is newer than `last_sync - --sync-lookback` (default 2m;
+  the overlap cheaply absorbs Confluence index lag and timestamp ties;
+  unchanged pages are skipped by Onyx via `doc_updated_at` anyway).
+- Filtering is exact and client-side: CQL is reordered to
+  `(CQL) order by lastmodified desc` and pagination stops early once it
+  passes the cutoff. Server-side CQL date literals are deliberately not
+  used — Confluence parses them in an undocumented tenant/timezone, which
+  would silently drop pages.
+- The checkpoint advances only when the whole run succeeds, so a failed
+  page or network error triggers a larger (but still correct) re-scan next
+  time. `--dry-run` never touches the checkpoint.
+- If your `--cql` already contains `ORDER BY`, ordering is left untouched
+  and early stop is disabled (filtering still applies).
+
+Daily cron example (adjust paths; `godotenv` loads `.env` from the
+working directory, so `cd` first):
+
+```cron
+0 6 * * * cd /opt/onyx-ingestor && ./bin/onyx-ingestor sync confluence --incremental >> ingest.log 2>&1
+```
+
+For rotation keep the checkpoint next to the binary; on Kubernetes run the
+same command as a CronJob with a `PersistentVolumeClaim` mounted at the
+state-file path.
 
 ## Configuration
 
@@ -95,7 +135,8 @@ endpoint path and schema against your Onyx version and adjust
 ```text
 cmd/onyx-ingestor/      CLI entry point; registers each `sync <source>` command
 internal/config/        validated env-based configuration
-internal/ingest/        source-agnostic pipeline: Source/Sink interfaces, stats, dry-run
+internal/ingest/        source-agnostic pipeline: Source/Sink interfaces, stats, dry-run,
+                        incremental sync checkpoints (state.go)
 internal/onyx/          Onyx ingestion API client (implements ingest.Sink)
 internal/confluence/
   client.go             Confluence REST client (CQL search, auth modes, pagination)
