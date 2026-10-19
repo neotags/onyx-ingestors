@@ -134,6 +134,9 @@ type SearchResult struct {
 	Limit   int    `json:"limit"`
 	Size    int    `json:"size"`
 	Links   struct {
+		// Base is the site base URL; Confluence Cloud omits per-page
+		// `_links.base` in search results, so pages inherit this one.
+		Base string `json:"base"`
 		Next string `json:"next"`
 	} `json:"_links"`
 }
@@ -247,6 +250,14 @@ func (c *Client) SearchPages(ctx context.Context, cql string, start, limit int) 
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return out, fmt.Errorf("confluence search: decode response: %w", err)
+	}
+	// Cloud search responses put the base URL on the result envelope, not
+	// on each page; without it section links and attachment URLs would
+	// silently come out empty.
+	for i := range out.Results {
+		if out.Results[i].Links.Base == "" {
+			out.Results[i].Links.Base = out.Links.Base
+		}
 	}
 	return out, nil
 }
