@@ -178,3 +178,28 @@ func TestSearchPagesHTTPError(t *testing.T) {
 	assert.ErrorContains(t, err, "500")
 	assert.NotContains(t, err.Error(), "secret", "error must not leak the token")
 }
+
+// TestSearchPagesFallsBackToEnvelopeBase mirrors Confluence Cloud behavior:
+// the search envelope carries _links.base while result pages only carry
+// webui. WebURL must still resolve, and a page-provided base wins.
+func TestSearchPagesFallsBackToEnvelopeBase(t *testing.T) {
+	hc := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return cannedResponse(http.StatusOK, `{
+  "results": [
+    {"id": "1", "title": "A", "_links": {"webui": "/spaces/X/pages/1"}},
+    {"id": "2", "title": "B", "_links": {"base": "https://page.override/wiki", "webui": "/x/2"}}
+  ],
+  "size": 2,
+  "_links": {"base": "https://ex.atlassian.net/wiki"}
+}`), nil
+	})}
+
+	c, err := NewClient(Options{BaseURL: "https://ex.atlassian.net/wiki", Auth: basicAuth()}, hc)
+	require.NoError(t, err)
+
+	res, err := c.SearchPages(context.Background(), "type=page", 0, 50)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 2)
+	assert.Equal(t, "https://ex.atlassian.net/wiki/spaces/X/pages/1", res.Results[0].WebURL())
+	assert.Equal(t, "https://page.override/wiki/x/2", res.Results[1].WebURL())
+}
