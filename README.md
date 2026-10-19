@@ -22,11 +22,11 @@ onyx-ingestor version
 
 Each run searches Confluence with [CQL](https://developer.atlassian.com/cloud/confluence/advanced-searching-using-cql/),
 maps every page to an Onyx ingestion document (title, plain-text body,
-deep link, last-modified timestamp), and pushes it.
-Search citations link back to the original page: every section carries
-the page URL, and the same URL is also indexed as the `confluence_url`
-metadata tag (alongside `confluence_id`). to the configured Onyx
-connector/credential pair. Pages are pre-split into multiple `sections`:
+deep link, last-modified timestamp), and pushes it to the configured Onyx
+connector/credential pair. Search citations link back to the original
+page: every section carries the page URL, and the same URL is also
+indexed as the `confluence_url` metadata tag (alongside `confluence_id`).
+Pages are pre-split into multiple `sections`:
 
 - On Confluence Cloud, the **Atlas Document Format** (`body.atlas_doc_format`)
   JSON tree is preferred: sections split at heading nodes of level 1-2, with
