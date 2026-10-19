@@ -128,16 +128,19 @@ func MapPage(page Page) onyx.Document {
 		}
 	}
 
+	metadata := map[string]string{"confluence_id": page.ID}
+	if link != "" {
+		metadata["confluence_url"] = link
+	}
+
 	return onyx.Document{
 		ID:                 "confluence-" + page.ID,
 		Sections:           sections,
 		Source:             "confluence",
 		SemanticIdentifier: page.Title,
-		Metadata: map[string]string{
-			"confluence_id": page.ID,
-		},
-		DocUpdatedAt:     updated,
-		Title:            page.Title,
-		FromIngestionAPI: true,
+		Metadata:           metadata,
+		DocUpdatedAt:       updated,
+		Title:              page.Title,
+		FromIngestionAPI:   true,
 	}
 }
