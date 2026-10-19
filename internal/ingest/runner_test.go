@@ -1,8 +1,10 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,4 +87,26 @@ func TestRunSourceError(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "fetch failed")
 	assert.Equal(t, Stats{Seen: 1, Ingested: 1}, stats)
+}
+
+func TestRunProgressLogIncludesTitleAndLink(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	all := docs("p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10",
+		"p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18", "p19", "p20",
+		"p21", "p22", "p23", "p24", "p25")
+	all[24].Sections = []onyx.Section{{Text: "x", Link: "https://ex.atlassian.net/wiki/x/25"}}
+	source := &fakeSource{docs: all}
+	sink := &fakeSink{}
+
+	_, err := Run(context.Background(), source, sink, Options{})
+	require.NoError(t, err)
+
+	out := buf.String()
+	assert.Contains(t, out, "seen=25")
+	assert.Contains(t, out, `title="Title p25"`)
+	assert.Contains(t, out, "link=https://ex.atlassian.net/wiki/x/25")
 }

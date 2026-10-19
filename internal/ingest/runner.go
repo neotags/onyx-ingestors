@@ -57,8 +57,7 @@ func Run(ctx context.Context, source Source, sink Sink, opts Options) (Stats, er
 		}
 		stats.Ingested++
 		if stats.Seen%progressEvery == 0 {
-			slog.Info("ingest progress",
-				"seen", stats.Seen, "ingested", stats.Ingested, "failed", stats.Failed)
+			slog.Info("ingest progress", progressAttrs(stats, doc)...)
 		}
 		return nil
 	})
@@ -66,4 +65,21 @@ func Run(ctx context.Context, source Source, sink Sink, opts Options) (Stats, er
 		return stats, fmt.Errorf("sync: %w", err)
 	}
 	return stats, nil
+}
+
+// progressAttrs adds the title and link of the most recently ingested
+// document so long runs can be followed by page, not just counters. The
+// link is taken from the first section that has one.
+func progressAttrs(stats Stats, doc onyx.Document) []any {
+	title := doc.Title
+	if title == "" {
+		title = doc.SemanticIdentifier
+	}
+	attrs := []any{"seen", stats.Seen, "ingested", stats.Ingested, "failed", stats.Failed, "title", title}
+	for _, s := range doc.Sections {
+		if s.Link != "" {
+			return append(attrs, "link", s.Link)
+		}
+	}
+	return attrs
 }
