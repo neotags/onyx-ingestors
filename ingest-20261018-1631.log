@@ -1,3 +1,0 @@
-time=2026-10-18T16:31:27.195-07:00 level=INFO msg="confluence auth" mode=scoped
-time=2026-10-18T16:35:57.754-07:00 level=INFO msg="sync finished" source=confluence seen=1003 ingested=1002 skipped=0 failed=1 dry_run=false
-time=2026-10-18T16:35:57.755-07:00 level=ERROR msg="command failed" error="sync: ingest page 982745136 (\"模型上架手册\"): document \"confluence-982745136\" (\"模型上架手册\"): onyx ingestion for document \"confluence-982745136\": Post \"https://obs-kb.bitdeer-staging.ai/api/ingestion\": EOF"

@@ -9,3 +9,4 @@
 .DS_Store
 .onyx-ingestor-state.json
 .onyx-ingestor-state.json.tmp
+ingest-*.log

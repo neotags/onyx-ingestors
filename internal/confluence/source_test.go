@@ -124,6 +124,7 @@ func TestMapPageSplitsByHeadings(t *testing.T) {
 	assert.Equal(t, "Intro", doc.Sections[0].Text)
 	assert.Equal(t, "Alpha\nA body", doc.Sections[1].Text)
 	assert.Equal(t, "Beta\nB body", doc.Sections[2].Text)
+	assert.Equal(t, "https://ex.atlassian.net/wiki/x/9", doc.Metadata["confluence_url"])
 }
 
 func TestMapPagePrefersADF(t *testing.T) {
@@ -158,6 +159,8 @@ func TestMapPageFallsBackToStorage(t *testing.T) {
 	doc := MapPage(p)
 	require.Len(t, doc.Sections, 1)
 	assert.Equal(t, "storage body", doc.Sections[0].Text)
+	_, hasURL := doc.Metadata["confluence_url"]
+	assert.False(t, hasURL, "no URL metadata when the page has no links")
 }
 
 func TestIncrementalCQL(t *testing.T) {
