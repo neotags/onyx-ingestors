@@ -95,10 +95,27 @@ type Page struct {
 		Storage struct {
 			Value string `json:"value"`
 		} `json:"storage"`
+		AtlasDocFormat struct {
+			Value string `json:"value"`
+		} `json:"atlas_doc_format"`
 	} `json:"body"`
 	Links struct {
 		Base  string `json:"base"`
 		WebUI string `json:"webui"`
+	} `json:"_links"`
+	Children struct {
+		Attachment struct {
+			Results []Attachment `json:"results"`
+		} `json:"attachment"`
+	} `json:"children"`
+}
+
+// Attachment is a file attached to a Confluence page.
+type Attachment struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Links struct {
+		Download string `json:"download"`
 	} `json:"_links"`
 }
 
@@ -205,7 +222,9 @@ func (c *Client) SearchPages(ctx context.Context, cql string, start, limit int) 
 	q.Set("cql", cql)
 	q.Set("start", strconv.Itoa(start))
 	q.Set("limit", strconv.Itoa(limit))
-	q.Set("expand", "body.storage,version")
+	// atlas_doc_format gives a structured JSON document on Cloud; storage is
+	// kept as a fallback for legacy pages and Data Center.
+	q.Set("expand", "body.atlas_doc_format,body.storage,children.attachment,version")
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)

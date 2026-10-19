@@ -102,3 +102,15 @@ func TestLoadRejectsUnknownAuthType(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, EnvConfluenceAuthType)
 }
+
+func TestLoadOnyxIngestionPath(t *testing.T) {
+	env := validEnv()
+	env[EnvOnyxIngestionPath] = "/api/onyx-api/ingestion"
+	cfg, err := Load(getenvFrom(env))
+	require.NoError(t, err)
+	assert.Equal(t, "/api/onyx-api/ingestion", cfg.OnyxIngestionPath)
+
+	cfg, err = Load(getenvFrom(validEnv()))
+	require.NoError(t, err)
+	assert.Empty(t, cfg.OnyxIngestionPath, "unset means client default")
+}

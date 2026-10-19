@@ -107,3 +107,152 @@ func TestStreamFetchError(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "fetch confluence pages")
 }
+
+func TestMapPageSplitsByHeadings(t *testing.T) {
+	var p Page
+	p.ID = "9"
+	p.Title = "Doc"
+	p.Links.Base = "https://ex.atlassian.net/wiki"
+	p.Links.WebUI = "/x/9"
+	p.Body.Storage.Value = `<p>Intro</p><h1>Alpha</h1><p>A body</p><h2>Beta</h2><p>B body</p>`
+
+	doc := MapPage(p)
+	require.Len(t, doc.Sections, 3)
+	for _, s := range doc.Sections {
+		assert.Equal(t, "https://ex.atlassian.net/wiki/x/9", s.Link)
+	}
+	assert.Equal(t, "Intro", doc.Sections[0].Text)
+	assert.Equal(t, "Alpha\nA body", doc.Sections[1].Text)
+	assert.Equal(t, "Beta\nB body", doc.Sections[2].Text)
+}
+
+func TestMapPagePrefersADF(t *testing.T) {
+	var p Page
+	p.ID = "9"
+	p.Title = "Doc"
+	p.Links.Base = "https://ex.atlassian.net/wiki"
+	p.Links.WebUI = "/x/9"
+	p.Body.Storage.Value = `<p>storage body</p>` // would produce different text
+	p.Body.AtlasDocFormat.Value = `{"type":"doc","content":[
+		{"type":"paragraph","content":[{"type":"text","text":"adf intro"}]},
+		{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"ADF H"}]},
+		{"type":"paragraph","content":[{"type":"text","text":"adf body"}]}
+	]}`
+
+	doc := MapPage(p)
+	require.Len(t, doc.Sections, 2)
+	assert.Equal(t, "adf intro", doc.Sections[0].Text)
+	assert.Equal(t, "ADF H\nadf body", doc.Sections[1].Text)
+	for _, s := range doc.Sections {
+		assert.Equal(t, "https://ex.atlassian.net/wiki/x/9", s.Link)
+	}
+}
+
+func TestMapPageFallsBackToStorage(t *testing.T) {
+	var p Page
+	p.ID = "9"
+	p.Title = "Doc"
+	p.Body.Storage.Value = `<p>storage <b>body</b></p>`
+	// no atlas_doc_format
+
+	doc := MapPage(p)
+	require.Len(t, doc.Sections, 1)
+	assert.Equal(t, "storage body", doc.Sections[0].Text)
+}
+
+func TestIncrementalCQL(t *testing.T) {
+	q, ordered := incrementalCQL("type=page AND space=AIC")
+	assert.True(t, ordered)
+	assert.Equal(t, "(type=page AND space=AIC) order by lastmodified desc", q)
+
+	q, ordered = incrementalCQL("type=page ORDER BY title")
+	assert.False(t, ordered)
+	assert.Equal(t, "type=page ORDER BY title", q)
+}
+
+// incTransport serves pages newest-first (2024-05-10): 10:05 and 10:03 in
+// batch 0, then 09:58 in batch 1, which advertises a next link to batch 2
+// containing 09:50. requests records every "start" and "cql" seen.
+func incTransport(requests *[]string, cqlSeen *string) http.RoundTripper {
+	page := func(id, when string) string {
+		return pageJSON(id, "P"+id, "<p>body</p>", "https://ex.atlassian.net/wiki", "/x/"+id, when)
+	}
+	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		*cqlSeen = r.URL.Query().Get("cql")
+		start := r.URL.Query().Get("start")
+		*requests = append(*requests, start)
+		switch start {
+		case "0":
+			return cannedResponse(http.StatusOK, `{"results": [`+
+				page("a", "2024-05-10T10:05:00.000Z")+`,`+
+				page("b", "2024-05-10T10:03:00.000Z")+
+				`], "size": 2, "_links": {"next": "/search?start=2"}}`), nil
+		case "2":
+			return cannedResponse(http.StatusOK, `{"results": [`+
+				page("c", "2024-05-10T09:58:00.000Z")+`,`+
+				page("e", "2024-05-10T09:57:00.000Z")+
+				`], "size": 2, "_links": {"next": "/search?start=4"}}`), nil
+		default:
+			return cannedResponse(http.StatusOK, `{"results": [`+
+				page("d", "2024-05-10T09:50:00.000Z")+
+				`], "size": 1, "_links": {}}`), nil
+		}
+	})
+}
+
+func newIncTestSource(t *testing.T, transport http.RoundTripper, cql string, since time.Time) *Source {
+	t.Helper()
+	client, err := NewClient(Options{
+		BaseURL: "https://ex.atlassian.net/wiki",
+		Auth:    Auth{Mode: ModeBasic, Username: "u@x.com", Token: "t"},
+	}, &http.Client{Transport: transport})
+	require.NoError(t, err)
+	return NewIncrementalSource(client, cql, since, 2, 0)
+}
+
+func TestStreamIncrementalFiltersAndStopsEarly(t *testing.T) {
+	var requests []string
+	var cqlSeen string
+	since := time.Date(2024, 5, 10, 10, 2, 0, 0, time.UTC)
+	src := newIncTestSource(t, incTransport(&requests, &cqlSeen), "type=page", since)
+
+	docs := collectDocs(t, src)
+
+	require.Len(t, docs, 2)
+	assert.Equal(t, "confluence-a", docs[0].ID)
+	assert.Equal(t, "confluence-b", docs[1].ID)
+	// Page c at 09:58 is beyond the 1m scan grace past the cutoff, so
+	// pagination stopped without requesting batch 2.
+	assert.Equal(t, []string{"0", "2"}, requests)
+	assert.Equal(t, "(type=page) order by lastmodified desc", cqlSeen)
+}
+
+func TestStreamIncrementalWithUserOrderByScansAll(t *testing.T) {
+	var requests []string
+	var cqlSeen string
+	since := time.Date(2024, 5, 10, 10, 2, 0, 0, time.UTC)
+	src := newIncTestSource(t, incTransport(&requests, &cqlSeen), "type=page order by title", since)
+
+	docs := collectDocs(t, src)
+
+	// Still filtered client-side, but no early stop is possible when the
+	// user controls ordering, so all batches are scanned.
+	require.Len(t, docs, 2)
+	assert.Equal(t, []string{"0", "2", "4"}, requests)
+	assert.Equal(t, "type=page order by title", cqlSeen)
+}
+
+func TestStreamKeepsPagesWithoutVersionTimestamp(t *testing.T) {
+	transport := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return cannedResponse(http.StatusOK, `{"results": [{
+		  "id": "x", "title": "NoWhen",
+		  "body": {"storage": {"value": "<p>b</p>"}}
+		}], "size": 1, "_links": {}}`), nil
+	})
+	since := time.Date(2024, 5, 10, 10, 2, 0, 0, time.UTC)
+	src := newIncTestSource(t, transport, "type=page", since)
+
+	docs := collectDocs(t, src)
+	require.Len(t, docs, 1)
+	assert.Nil(t, docs[0].DocUpdatedAt)
+}

@@ -20,6 +20,7 @@ const (
 	EnvOnyxBaseURL        = "ONYX_BASE_URL"
 	EnvOnyxAPIKey         = "ONYX_API_KEY"
 	EnvOnyxCCPairID       = "ONYX_CC_PAIR_ID"
+	EnvOnyxIngestionPath  = "ONYX_INGESTION_PATH"
 	EnvHTTPTimeout        = "HTTP_TIMEOUT"
 )
 
@@ -42,7 +43,11 @@ type Config struct {
 	OnyxBaseURL        string
 	OnyxAPIKey         string
 	OnyxCCPairID       int
-	HTTPTimeout        time.Duration
+	// OnyxIngestionPath overrides the ingestion endpoint path for
+	// deployments behind the chart nginx (e.g. "/api/onyx-api/ingestion").
+	// Empty means the client's default.
+	OnyxIngestionPath string
+	HTTPTimeout       time.Duration
 }
 
 // Load reads configuration from getenv and validates it. Missing or invalid
@@ -57,6 +62,7 @@ func Load(getenv func(string) string) (Config, error) {
 		ConfluenceCQL:      getenv(EnvConfluenceCQL),
 		OnyxBaseURL:        strings.TrimRight(getenv(EnvOnyxBaseURL), "/"),
 		OnyxAPIKey:         getenv(EnvOnyxAPIKey),
+		OnyxIngestionPath:  getenv(EnvOnyxIngestionPath),
 		HTTPTimeout:        30 * time.Second,
 	}
 

@@ -3,6 +3,7 @@ package onyx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,7 +46,7 @@ func TestIngestPayload(t *testing.T) {
 	var payload map[string]any
 	hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, ingestionPath, r.URL.Path)
+		assert.Equal(t, DefaultIngestionPath, r.URL.Path)
 		assert.Equal(t, "Bearer onyx-key", r.Header.Get("Authorization"))
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
@@ -53,7 +54,7 @@ func TestIngestPayload(t *testing.T) {
 		return cannedResponse(http.StatusOK, "{}"), nil
 	})}
 
-	c := NewClient("https://onyx.example.com", "onyx-key", 12, hc)
+	c := NewClient("https://onyx.example.com", "onyx-key", 12, "", hc)
 	require.NoError(t, c.Ingest(context.Background(), testDocument()))
 
 	assert.Equal(t, float64(12), payload["cc_pair_id"])
@@ -71,9 +72,68 @@ func TestIngestHTTPError(t *testing.T) {
 		return cannedResponse(http.StatusUnauthorized, "unauthorized"), nil
 	})}
 
-	c := NewClient("https://onyx.example.com", "bad-key", 12, hc)
+	c := NewClient("https://onyx.example.com", "bad-key", 12, "", hc)
 	err := c.Ingest(context.Background(), testDocument())
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "401")
 	assert.NotContains(t, err.Error(), "bad-key", "error must not leak the API key")
+}
+
+func TestIngestRetriesOn429ThenSucceeds(t *testing.T) {
+	var calls int
+	hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls < 3 {
+			return cannedResponse(http.StatusTooManyRequests, "slow down"), nil
+		}
+		if calls > 1 {
+			assert.True(t, r.Close, "retries must use a fresh connection")
+		}
+		return cannedResponse(http.StatusOK, "{}"), nil
+	})}
+
+	c := NewClient("https://onyx.example.com", "onyx-key", 12, "", hc)
+	require.NoError(t, c.Ingest(context.Background(), testDocument()))
+	assert.Equal(t, 3, calls)
+}
+
+func TestIngestRetriesTransportError(t *testing.T) {
+	var calls int
+	hc := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		calls++
+		if calls < 3 {
+			return nil, errors.New("EOF")
+		}
+		return cannedResponse(http.StatusOK, "{}"), nil
+	})}
+
+	c := NewClient("https://onyx.example.com", "onyx-key", 12, "", hc)
+	require.NoError(t, c.Ingest(context.Background(), testDocument()))
+	assert.Equal(t, 3, calls)
+}
+
+func TestIngestDoesNotRetry400(t *testing.T) {
+	var calls int
+	hc := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		calls++
+		return cannedResponse(http.StatusBadRequest, "bad document"), nil
+	})}
+
+	c := NewClient("https://onyx.example.com", "onyx-key", 12, "", hc)
+	err := c.Ingest(context.Background(), testDocument())
+	require.Error(t, err)
+	assert.Equal(t, 1, calls)
+}
+
+func TestIngestGivesUpAfterMaxAttempts(t *testing.T) {
+	var calls int
+	hc := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		calls++
+		return cannedResponse(http.StatusServiceUnavailable, "down"), nil
+	})}
+
+	c := NewClient("https://onyx.example.com", "onyx-key", 12, "", hc)
+	err := c.Ingest(context.Background(), testDocument())
+	require.Error(t, err)
+	assert.Equal(t, maxAttempts, calls)
 }

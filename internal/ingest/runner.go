@@ -29,6 +29,9 @@ type Options struct {
 	DryRun bool
 }
 
+// progressEvery controls how often in-run progress lines are logged.
+const progressEvery = 25
+
 // Stats summarizes a finished run.
 type Stats struct {
 	Seen     int
@@ -53,6 +56,10 @@ func Run(ctx context.Context, source Source, sink Sink, opts Options) (Stats, er
 			return fmt.Errorf("document %q (%q): %w", doc.ID, doc.Title, err)
 		}
 		stats.Ingested++
+		if stats.Seen%progressEvery == 0 {
+			slog.Info("ingest progress",
+				"seen", stats.Seen, "ingested", stats.Ingested, "failed", stats.Failed)
+		}
 		return nil
 	})
 	if err != nil {
