@@ -32,7 +32,7 @@ func pagedTransport() http.RoundTripper {
 			return cannedResponse(http.StatusOK, `{"results": [`+
 				pageJSON("1", "First", "<p>Hello <b>world</b></p>", "https://ex.atlassian.net/wiki", "/x/1", "2024-05-01T10:00:00.000Z")+`,`+
 				pageJSON("2", "Second", "<p>Two</p>", "https://ex.atlassian.net/wiki", "/x/2", "2024-06-01T10:00:00.000Z")+
-				`], "start": 0, "limit": 2, "size": 2, "_links": {"next": "/rest/api/content/search?start=2"}}`), nil
+				`], "start": 0, "limit": 2, "size": 2, "_links": {"next": "/rest/api/content/rest/api/content/search?start=2"}}`), nil
 		default:
 			return cannedResponse(http.StatusOK, `{"results": [`+
 				pageJSON("3", "Third", "<p>Three</p>", "https://ex.atlassian.net/wiki", "/x/3", "2024-07-01T10:00:00.000Z")+
@@ -86,6 +86,23 @@ func TestStreamPaginatesAndMaps(t *testing.T) {
 func TestStreamStopsAtMaxPages(t *testing.T) {
 	docs := collectDocs(t, newTestSource(t, pagedTransport(), 2, 1))
 	assert.Len(t, docs, 2)
+}
+
+// Reproduces the unstable live index: every request returns the same
+// already-seen pages but keeps serving a next link, so without dedup the
+// stream would loop forever re-ingesting them.
+func TestStreamStopsWhenServerRepeatsResults(t *testing.T) {
+	body := `{"results": [` +
+		pageJSON("1", "First", "<p>One</p>", "https://ex.atlassian.net/wiki", "/x/1", "2024-05-01T10:00:00.000Z") + `,` +
+		pageJSON("2", "Second", "<p>Two</p>", "https://ex.atlassian.net/wiki", "/x/2", "2024-06-01T10:00:00.000Z") +
+		`], "start": 0, "limit": 2, "size": 2, "_links": {"next": "/rest/api/content/rest/api/content/search?start=2"}}`
+	transport := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return cannedResponse(http.StatusOK, body), nil
+	})
+	docs := collectDocs(t, newTestSource(t, transport, 2, 0))
+	require.Len(t, docs, 2)
+	assert.Equal(t, "confluence-1", docs[0].ID)
+	assert.Equal(t, "confluence-2", docs[1].ID)
 }
 
 func TestStreamPropagatesEmitError(t *testing.T) {
@@ -181,7 +198,9 @@ func incTransport(requests *[]string, cqlSeen *string) http.RoundTripper {
 		return pageJSON(id, "P"+id, "<p>body</p>", "https://ex.atlassian.net/wiki", "/x/"+id, when)
 	}
 	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		*cqlSeen = r.URL.Query().Get("cql")
+		if cql := r.URL.Query().Get("cql"); cql != "" {
+			*cqlSeen = cql
+		}
 		start := r.URL.Query().Get("start")
 		*requests = append(*requests, start)
 		switch start {
@@ -189,12 +208,12 @@ func incTransport(requests *[]string, cqlSeen *string) http.RoundTripper {
 			return cannedResponse(http.StatusOK, `{"results": [`+
 				page("a", "2024-05-10T10:05:00.000Z")+`,`+
 				page("b", "2024-05-10T10:03:00.000Z")+
-				`], "size": 2, "_links": {"next": "/search?start=2"}}`), nil
+				`], "size": 2, "_links": {"next": "/rest/api/content/search?start=2"}}`), nil
 		case "2":
 			return cannedResponse(http.StatusOK, `{"results": [`+
 				page("c", "2024-05-10T09:58:00.000Z")+`,`+
 				page("e", "2024-05-10T09:57:00.000Z")+
-				`], "size": 2, "_links": {"next": "/search?start=4"}}`), nil
+				`], "size": 2, "_links": {"next": "/rest/api/content/search?start=4"}}`), nil
 		default:
 			return cannedResponse(http.StatusOK, `{"results": [`+
 				page("d", "2024-05-10T09:50:00.000Z")+

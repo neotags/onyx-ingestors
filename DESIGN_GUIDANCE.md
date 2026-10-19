@@ -73,8 +73,12 @@ never incorrect; under-fetching is a silent data-loss bug.
 
 - One request page at a time, honoring context cancellation on every
   network call.
-- Detect termination by the API's own contract (short page *or* missing
-  next link — Confluence needs both).
+- Follow `_links.next` verbatim to paginate; never recompute offsets.
+  Confluence Cloud's scoped-token gateway paginates CQL search with an
+  opaque cursor and silently ignores the `start` offset — client-side
+  offset arithmetic just refetches the first batch forever. Terminate on a
+  missing/empty next link, an empty batch, or a batch with no new pages
+  (per-run ID dedup) so a misbehaving index can never loop.
 - Keep page size configurable (`--page-size`, capped at the API max).
 - For incremental runs, ordering is only an optimization (early stop);
   correctness must come from the exact filter. If the caller controls

@@ -132,6 +132,43 @@ func TestSearchPagesBearerWithoutUsername(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestSearchPageURLFollowsCursorVerbatim(t *testing.T) {
+	// The scoped gateway paginates CQL search via an opaque cursor carried in
+	// _links.next; the client must join it to the API base unchanged.
+	hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		assert.Equal(t,
+			"https://api.atlassian.com/ex/confluence/cloud-123/wiki/rest/api/content/search?next=true&cursor=abc%3D&limit=25",
+			r.URL.String())
+		return cannedResponse(http.StatusOK, `{"results":[],"size":0,"_links":{}}`), nil
+	})}
+	auth := Auth{Mode: ModeScopedBearer, Token: "scoped-token", CloudID: "cloud-123"}
+	c, err := NewClient(Options{BaseURL: "https://ex.atlassian.net/wiki", Auth: auth}, hc)
+	require.NoError(t, err)
+
+	_, err = c.SearchPageURL(context.Background(),
+		"/rest/api/content/search?next=true&cursor=abc%3D&limit=25")
+	require.NoError(t, err)
+
+	_, err = c.SearchPageURL(context.Background(), "https://evil.example.com/x")
+	require.Error(t, err)
+}
+
+func TestCountPagesReadsTotalSize(t *testing.T) {
+	hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		assert.Equal(t, "/wiki/rest/api/search", r.URL.Path)
+		q := r.URL.Query()
+		assert.Equal(t, "type=page", q.Get("cql"))
+		assert.Equal(t, "1", q.Get("limit"))
+		return cannedResponse(http.StatusOK, `{"size":1,"totalSize":1587}`), nil
+	})}
+	c, err := NewClient(Options{BaseURL: "https://ex.atlassian.net/wiki", Auth: basicAuth()}, hc)
+	require.NoError(t, err)
+
+	total, err := c.CountPages(context.Background(), "type=page")
+	require.NoError(t, err)
+	assert.Equal(t, 1587, total)
+}
+
 func TestNewClientValidation(t *testing.T) {
 	cases := []struct {
 		name string
