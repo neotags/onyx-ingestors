@@ -71,6 +71,9 @@ How it works:
 - Pagination follows the `_links.next` cursor verbatim. Atlassian's
   scoped-token gateway (`CONFLUENCE_AUTH_TYPE=scoped`) ignores the `start`
   offset in CQL search, so offsets are never computed client-side.
+- Confluence API calls retry up to 5 times: `Retry-After` is honored on
+  429, exponential backoff covers 5xx and transport errors, and on a
+  server error the page size is halved (floor 5) before retrying.
 - The checkpoint advances only when the whole run succeeds, so a failed
   page or network error triggers a larger (but still correct) re-scan next
   time. `--dry-run` never touches the checkpoint.

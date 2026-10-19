@@ -116,6 +116,7 @@ func TestStreamPropagatesEmitError(t *testing.T) {
 }
 
 func TestStreamFetchError(t *testing.T) {
+	noSleep(t)
 	transport := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return cannedResponse(http.StatusBadGateway, "bad gateway"), nil
 	})

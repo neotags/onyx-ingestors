@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -148,6 +149,37 @@ type Options struct {
 	Auth    Auth
 }
 
+// Retry policy for Confluence calls, modeled on the Onyx connector's
+// _handle_http_error: bounded attempts, Retry-After honored, exponential
+// backoff otherwise, and progressive page-size reduction on 5xx.
+const (
+	// maxRequestAttempts bounds retries per request (initial + retries).
+	maxRequestAttempts = 5
+	// backoffBase/backoffMax define exponential delay between attempts.
+	backoffBase = 5 * time.Second
+	backoffMax  = 60 * time.Second
+	// retryAfterBounds clamp proven Retry-After values: Atlassian can send
+	// pathologically large values, and sub-second pauses don't help.
+	retryAfterMin = 2
+	retryAfterMax = 60
+	// minSearchLimit prevents the progressive reduction on 5xx from
+	// degenerating into single-item fetches.
+	minSearchLimit = 5
+)
+
+// sleepCtx sleeps for d or until ctx is done. A package variable (not a
+// Client field) so tests can replace it globally.
+var sleepCtx = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // Client calls the Confluence REST API.
 type Client struct {
 	siteBase    string // e.g. https://example.atlassian.net/wiki
@@ -261,28 +293,14 @@ func (c *Client) CountPages(ctx context.Context, cql string) (int, error) {
 	q.Set("limit", "1")
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return 0, fmt.Errorf("confluence count request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	c.authorize(req)
-
-	resp, err := c.hc.Do(req)
+	body, err := c.get(ctx, u.String(), false)
 	if err != nil {
 		return 0, fmt.Errorf("confluence count: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return 0, fmt.Errorf("confluence count: unexpected status %s: %s",
-			resp.Status, strings.TrimSpace(string(body)))
 	}
 	var out struct {
 		TotalSize int `json:"totalSize"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(body, &out); err != nil {
 		return 0, fmt.Errorf("confluence count: decode response: %w", err)
 	}
 	return out.TotalSize, nil
@@ -292,25 +310,11 @@ func (c *Client) CountPages(ctx context.Context, cql string) (int, error) {
 // Cloud puts the base URL on the result envelope, not on each page.
 func (c *Client) doSearch(ctx context.Context, reqURL string) (SearchResult, error) {
 	var out SearchResult
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return out, fmt.Errorf("confluence search request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	c.authorize(req)
-
-	resp, err := c.hc.Do(req)
+	body, err := c.get(ctx, reqURL, true)
 	if err != nil {
 		return out, fmt.Errorf("confluence search: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return out, fmt.Errorf("confluence search: unexpected status %s: %s",
-			resp.Status, strings.TrimSpace(string(body)))
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(body, &out); err != nil {
 		return out, fmt.Errorf("confluence search: decode response: %w", err)
 	}
 	// Cloud search responses put the base URL on the result envelope, not
@@ -322,4 +326,119 @@ func (c *Client) doSearch(ctx context.Context, reqURL string) (SearchResult, err
 		}
 	}
 	return out, nil
+}
+
+// get fetches reqURL with bounded retries. Transport errors, 429, and 5xx
+// are retryable; Retry-After is honored and otherwise delay grows
+// exponentially. When halveLimit is true, a 5xx also halves the limit
+// query parameter (floor minSearchLimit) and retries the rewritten URL —
+// Cloud frequently 504s on heavyweight result windows, and lighter
+// windows get through.
+func (c *Client) get(ctx context.Context, reqURL string, halveLimit bool) ([]byte, error) {
+	attemptURL := reqURL
+	var lastErr error
+	for attempt := 1; attempt <= maxRequestAttempts; attempt++ {
+		body, status, retryAfter, err := c.doOnce(ctx, attemptURL)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		// status 0 = transport failure; HTTP failures are retryable per
+		// Onyx's model: 429 (rate limit) and 5xx (server/transient).
+		retryable := status == 0 || status == http.StatusTooManyRequests || (status >= 500 && status < 600)
+		if attempt == maxRequestAttempts || !retryable {
+			break
+		}
+		if halveLimit && status >= 500 && status < 600 {
+			if next, ok := halveLimitParam(attemptURL); ok {
+				slog.Warn("confluence request failed; retrying with a smaller limit",
+					"status", status, "attempt", attempt, "limit", limitParamOf(next))
+				attemptURL = next
+			}
+		}
+		delay := retryDelay(retryAfter, attempt)
+		slog.Warn("confluence request failed; retrying",
+			"attempt", attempt, "of", maxRequestAttempts, "delay", delay.String(), "error", err)
+		if serr := sleepCtx(ctx, delay); serr != nil {
+			return nil, serr
+		}
+	}
+	return nil, fmt.Errorf("failed after %d attempts: %w", maxRequestAttempts, lastErr)
+}
+
+// doOnce performs a single GET and returns the body (always fully read and
+// closed), the status code, the Retry-After header value, and any error.
+// err is non-nil for transport failures and non-200 statuses.
+func (c *Client) doOnce(ctx context.Context, reqURL string) ([]byte, int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("request construction: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	c.authorize(req)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("%w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, resp.StatusCode, resp.Header.Get("Retry-After"),
+			fmt.Errorf("unexpected status %s: %s", resp.Status, strings.TrimSpace(string(snippet)))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, "", fmt.Errorf("read response: %w", err)
+	}
+	return body, resp.StatusCode, "", nil
+}
+
+// retryDelay computes the wait before the next attempt: Retry-After when
+// parseable (clamped), otherwise exponential backoff backoffBase*2^(n-1)
+// capped at backoffMax. n is 1-based (the attempt that just failed).
+func retryDelay(retryAfter string, n int) time.Duration {
+	if secs, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && strings.TrimSpace(retryAfter) != "" {
+		if secs < retryAfterMin {
+			secs = retryAfterMin
+		}
+		if secs > retryAfterMax {
+			secs = retryAfterMax
+		}
+		return time.Duration(secs) * time.Second
+	}
+	delay := backoffBase << (n - 1)
+	if delay > backoffMax {
+		delay = backoffMax
+	}
+	return delay
+}
+
+// halveLimitParam rewrites URL with limit halved (floor minSearchLimit).
+// ok is false when the URL has no integer limit or is already at the floor.
+func halveLimitParam(rawurl string) (string, bool) {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		return rawurl, false
+	}
+	q := u.Query()
+	limit, err := strconv.Atoi(q.Get("limit"))
+	if err != nil || limit <= minSearchLimit {
+		return rawurl, false
+	}
+	limit /= 2
+	if limit < minSearchLimit {
+		limit = minSearchLimit
+	}
+	q.Set("limit", strconv.Itoa(limit))
+	u.RawQuery = q.Encode()
+	return u.String(), true
+}
+
+// limitParamOf extracts the limit param for logging; "" when absent.
+func limitParamOf(rawurl string) string {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get("limit")
 }
