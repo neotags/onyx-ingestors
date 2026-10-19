@@ -27,6 +27,12 @@ sink, incremental checkpoints) is source-agnostic.
 - git: feature branches + PRs; never commit `.env`; don't push to `main`
   or merge PRs without explicit user approval.
 
+## Security: this is a public repo
+
+- Never commit secrets, tokens, internal hostnames, AWS account IDs, company names, or local paths. Use placeholders (`example.com`, `OWNER`). The gitleaks hook and CI scan enforce the secret part; the rest is on you.
+- Secrets come from env / a Kubernetes Secret (`neotags-secrets`). Don't read other projects' `.env` files into this repo.
+- Workflows: pin third-party actions by commit SHA with a version comment; keep permissions minimal; don't add `pull_request` triggers that touch secrets or registries.
+
 ## Design tasks
 
 When designing or extending an ingestor (new source, sync semantics,
