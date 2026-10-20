@@ -22,6 +22,7 @@ const (
 	EnvOnyxCCPairID       = "ONYX_CC_PAIR_ID"
 	EnvOnyxIngestionPath  = "ONYX_INGESTION_PATH"
 	EnvHTTPTimeout        = "HTTP_TIMEOUT"
+	EnvOnyxHTTPTimeout    = "ONYX_HTTP_TIMEOUT"
 )
 
 // Config is the typed, validated runtime configuration.
@@ -48,6 +49,11 @@ type Config struct {
 	// Empty means the client's default.
 	OnyxIngestionPath string
 	HTTPTimeout       time.Duration
+	// OnyxHTTPTimeout bounds each ingestion POST. Ingestion is
+	// server-side pipeline work (extraction, chunking, embedding) and
+	// can legitimately take tens of seconds, so it defaults higher than
+	// HTTPTimeout and can be tuned separately.
+	OnyxHTTPTimeout time.Duration
 }
 
 // Load reads configuration from getenv and validates it. Missing or invalid
@@ -72,6 +78,20 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("%s must be a positive duration (e.g. 30s)", EnvHTTPTimeout)
 		}
 		cfg.HTTPTimeout = d
+	}
+
+	cfg.OnyxHTTPTimeout = 2 * time.Minute
+	if cfg.HTTPTimeout != 30*time.Second {
+		// Preserve pre-split behavior: an explicit HTTP_TIMEOUT previously
+		// governed every request, including ingestion.
+		cfg.OnyxHTTPTimeout = cfg.HTTPTimeout
+	}
+	if raw := getenv(EnvOnyxHTTPTimeout); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("%s must be a positive duration (e.g. 120s)", EnvOnyxHTTPTimeout)
+		}
+		cfg.OnyxHTTPTimeout = d
 	}
 
 	if raw := getenv(EnvOnyxCCPairID); raw != "" {

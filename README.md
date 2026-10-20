@@ -121,7 +121,8 @@ variables already set in the real environment take precedence.
 | `ONYX_API_KEY`         | yes      | Onyx API key (sent as `Authorization: Bearer ...`). |
 | `ONYX_CC_PAIR_ID`      | yes      | Integer ID of the Onyx connector/credential pair to ingest into. |
 | `ONYX_INGESTION_PATH`  | no       | Ingestion endpoint path (default `/onyx-api/ingestion`). Set to your deployment's mount path when it differs, e.g. `/api/ingestion` behind the chart nginx (it only forwards `/api/*`). |
-| `HTTP_TIMEOUT`         | no       | HTTP timeout as Go duration (default `30s`). |
+| `HTTP_TIMEOUT`         | no       | HTTP timeout for Confluence fetches, as a Go duration (default `30s`). |
+| `ONYX_HTTP_TIMEOUT`    | no       | HTTP timeout per ingestion POST (default `2m`); ingestion does server-side extraction/chunking/embedding and can be slow on a loaded Onyx. If `HTTP_TIMEOUT` is set explicitly and this is not, ingestion inherits `HTTP_TIMEOUT` (previous behavior). |
 
 Copy `.env.example` to `.env` for a local template; `.env` is git-ignored
 and picked up automatically, so `source .env` is not needed.

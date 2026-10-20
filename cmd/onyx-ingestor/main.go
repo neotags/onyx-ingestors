@@ -81,8 +81,9 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 	if err != nil {
 		return err
 	}
-	hc := &http.Client{Timeout: cfg.HTTPTimeout}
-	sink := onyx.NewClient(cfg.OnyxBaseURL, cfg.OnyxAPIKey, cfg.OnyxCCPairID, cfg.OnyxIngestionPath, hc)
+	sourceHTTP := &http.Client{Timeout: cfg.HTTPTimeout}
+	sink := onyx.NewClient(cfg.OnyxBaseURL, cfg.OnyxAPIKey, cfg.OnyxCCPairID, cfg.OnyxIngestionPath,
+		&http.Client{Timeout: cfg.OnyxHTTPTimeout})
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -129,7 +130,7 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 				Token:    cfg.ConfluenceToken,
 				CloudID:  cfg.ConfluenceCloudID,
 			},
-		}, hc)
+		}, sourceHTTP)
 		if err != nil {
 			return err
 		}
