@@ -135,6 +135,11 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 			return err
 		}
 		slog.Info("confluence auth", "mode", mode.String())
+		if total, cerr := client.CountPages(ctx, cfg.ConfluenceCQL); cerr != nil {
+			slog.Warn("could not count confluence pages; progress will run without a total", "error", cerr)
+		} else {
+			slog.Info("confluence pages matching CQL", "cql", cfg.ConfluenceCQL, "total", total)
+		}
 		since := time.Time{}
 		st, err = ingest.LoadState(stateFile)
 		if err != nil {
