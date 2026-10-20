@@ -36,15 +36,29 @@ Pages are pre-split into multiple `sections`:
 
 Output is capped at 64 sections per page so Onyx indexes coherent chunks.
 
-**Attachments**: the Onyx ingestion API is text-only, so binary content is
-never uploaded. Instead, each page's file attachments (via the
-`children.attachment` expansion) are rendered as a trailing `Attachments:`
-section with one line per file — title plus an absolute, authenticated
-download URL — so files remain discoverable in search results and deep-linkable
-in answers (access itself is still enforced by Confluence). Pages with more
-than 25 attachments are truncated (see `TODO(onyx-ingestor)` in
-`internal/confluence/attachments.go`). The run stops on the first failed document and
-prints stats (`seen`/`ingested`/`skipped`/`failed`) on exit.
+**Attachments**: after the page stream, the ingestor scans attachments
+matching the same CQL scope (every `type=page` is rewritten to
+`type=attachment`) and ingests each one as its own document, linked to its
+parent page via `parent_page_id`/`parent_page_title` metadata. Files are
+downloaded (capped at `CONFLUENCE_ATTACHMENT_MAX_BYTES`, default 25 MiB),
+converted to text, and truncated at `CONFLUENCE_ATTACHMENT_MAX_CHARS`
+(default 100k runes) before ingestion. Conversion is handled by
+`internal/extract`: office formats (pdf, docx, pptx, xlsx, …) go through
+the pure-Go [anymd](https://github.com/muthuishere/anymd) library, while
+drawio diagrams and text-ish formats use small standard-library paths.
+Images are deliberately skipped — without a vision model they carry no
+text. Anything that cannot yield text (scanned PDFs, corrupt files,
+oversize files, unsupported types) is logged and skipped; it never aborts
+the run. Scoped API tokens additionally need the
+`read:attachment:confluence` scope for downloads. Disable the whole stream
+with `CONFLUENCE_ATTACHMENTS=off`, or narrow the allow-list with
+`CONFLUENCE_ATTACHMENT_TYPES` (default: `pdf docx pptx xlsx csv md txt
+log json yaml yml drawio`). The incremental cutoff applies to each
+attachment's own version timestamp, so steady-state runs only download
+what changed.
+
+The run stops on the first **page** or exceeded failure budget and prints
+stats (`seen`/`ingested`/`skipped`/`failed`) on exit.
 
 ## Incremental syncs
 
@@ -121,6 +135,10 @@ variables already set in the real environment take precedence.
 | `ONYX_API_KEY`         | yes      | Onyx API key (sent as `Authorization: Bearer ...`). |
 | `ONYX_CC_PAIR_ID`      | yes      | Integer ID of the Onyx connector/credential pair to ingest into. |
 | `ONYX_INGESTION_PATH`  | no       | Ingestion endpoint path (default `/onyx-api/ingestion`). Set to your deployment's mount path when it differs, e.g. `/api/ingestion` behind the chart nginx (it only forwards `/api/*`). |
+| `CONFLUENCE_ATTACHMENTS` | no     | `on` (default) or `off`: ingest file attachments as separate documents. |
+| `CONFLUENCE_ATTACHMENT_TYPES` | no | CSV allow-list of extensions (default `pdf,docx,pptx,xlsx,csv,md,txt,log,json,yaml,yml,drawio`). |
+| `CONFLUENCE_ATTACHMENT_MAX_BYTES` | no | Download cap per attachment in bytes (default `26214400` = 25 MiB). |
+| `CONFLUENCE_ATTACHMENT_MAX_CHARS` | no | Converted-text cap per attachment in characters (default `100000`). |
 | `HTTP_TIMEOUT`         | no       | HTTP timeout for Confluence fetches, as a Go duration (default `30s`). |
 | `ONYX_HTTP_TIMEOUT`    | no       | HTTP timeout per ingestion POST (default `2m`); ingestion does server-side extraction/chunking/embedding and can be slow on a loaded Onyx. If `HTTP_TIMEOUT` is set explicitly and this is not, ingestion inherits `HTTP_TIMEOUT` (previous behavior). |
 

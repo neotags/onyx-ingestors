@@ -108,7 +108,15 @@ Gaps Onyx covers that we don't (feed the plan below).
 7. **Label exclusion config** — `CONFLUENCE_LABELS_TO_SKIP` →
    `label not in ('a','b')` appended to the CQL (port of
    `build_label_filter`).
-8. **Attachments beyond name-listing** — decision point: check whether the
+8. **Attachments beyond name-listing** — ✅ shipped: the API is text-only
+   (rejects `file_id` and file-store sections), so extraction happens
+   client-side. Post-page second stream rewrites the page CQL to
+   `type=attachment`, cursor-paginates the result set, downloads with a
+   byte cap, converts via pure-Go anymd (office/pdf) + stdlib paths
+   (drawio, text-ish), and emits one document per attachment with
+   `parent_page_id` metadata. Skips (scanned PDFs, images, oversize,
+   corrupt) never abort the run. Original write-up kept for reference.
+   Decision point: check whether the
    Onyx ingestion API accepts binary/file documents. If yes: fetch
    attachments via `type=attachment and container=<id>` (cursor
    pagination, fixing the current 25-item `children.attachment`

@@ -11,18 +11,22 @@ import (
 
 // Environment variable names read by config.Load.
 const (
-	EnvConfluenceBaseURL  = "CONFLUENCE_BASE_URL"
-	EnvConfluenceAuthType = "CONFLUENCE_AUTH_TYPE" // auto | basic | bearer | scoped
-	EnvConfluenceCloudID  = "CONFLUENCE_CLOUD_ID"
-	EnvConfluenceUsername = "CONFLUENCE_USERNAME"
-	EnvConfluenceToken    = "CONFLUENCE_TOKEN"
-	EnvConfluenceCQL      = "CONFLUENCE_CQL"
-	EnvOnyxBaseURL        = "ONYX_BASE_URL"
-	EnvOnyxAPIKey         = "ONYX_API_KEY"
-	EnvOnyxCCPairID       = "ONYX_CC_PAIR_ID"
-	EnvOnyxIngestionPath  = "ONYX_INGESTION_PATH"
-	EnvHTTPTimeout        = "HTTP_TIMEOUT"
-	EnvOnyxHTTPTimeout    = "ONYX_HTTP_TIMEOUT"
+	EnvConfluenceBaseURL         = "CONFLUENCE_BASE_URL"
+	EnvConfluenceAuthType        = "CONFLUENCE_AUTH_TYPE" // auto | basic | bearer | scoped
+	EnvConfluenceCloudID         = "CONFLUENCE_CLOUD_ID"
+	EnvConfluenceUsername        = "CONFLUENCE_USERNAME"
+	EnvConfluenceToken           = "CONFLUENCE_TOKEN"
+	EnvConfluenceCQL             = "CONFLUENCE_CQL"
+	EnvConfluenceAttachments     = "CONFLUENCE_ATTACHMENTS"      // on | off (default on)
+	EnvConfluenceAttachmentTypes = "CONFLUENCE_ATTACHMENT_TYPES" // CSV allow-list of extensions
+	EnvConfluenceAttachmentMaxB  = "CONFLUENCE_ATTACHMENT_MAX_BYTES"
+	EnvConfluenceAttachmentMaxCh = "CONFLUENCE_ATTACHMENT_MAX_CHARS"
+	EnvOnyxBaseURL               = "ONYX_BASE_URL"
+	EnvOnyxAPIKey                = "ONYX_API_KEY"
+	EnvOnyxCCPairID              = "ONYX_CC_PAIR_ID"
+	EnvOnyxIngestionPath         = "ONYX_INGESTION_PATH"
+	EnvHTTPTimeout               = "HTTP_TIMEOUT"
+	EnvOnyxHTTPTimeout           = "ONYX_HTTP_TIMEOUT"
 )
 
 // Config is the typed, validated runtime configuration.
@@ -41,9 +45,19 @@ type Config struct {
 	ConfluenceUsername string
 	ConfluenceToken    string
 	ConfluenceCQL      string
-	OnyxBaseURL        string
-	OnyxAPIKey         string
-	OnyxCCPairID       int
+	// ConfluenceAttachments enables the attachment second stream
+	// (DefaultTypes allow-list unless ConfluenceAttachmentTypes is set).
+	ConfluenceAttachments bool
+	// ConfluenceAttachmentTypes holds the allowed extensions
+	// (lowercase, dot-less). Empty = package default.
+	ConfluenceAttachmentTypes []string
+	// ConfluenceAttachmentMaxBytes caps a single download (default 25 MiB).
+	ConfluenceAttachmentMaxBytes int
+	// ConfluenceAttachmentMaxChars caps converted text (default 100k).
+	ConfluenceAttachmentMaxChars int
+	OnyxBaseURL                  string
+	OnyxAPIKey                   string
+	OnyxCCPairID                 int
 	// OnyxIngestionPath overrides the ingestion endpoint path for
 	// deployments behind the chart nginx (e.g. "/api/onyx-api/ingestion").
 	// Empty means the client's default.
@@ -60,16 +74,54 @@ type Config struct {
 // values are reported by variable name only; secrets are never echoed back.
 func Load(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		ConfluenceBaseURL:  strings.TrimRight(getenv(EnvConfluenceBaseURL), "/"),
-		ConfluenceAuthType: strings.ToLower(strings.TrimSpace(getenv(EnvConfluenceAuthType))),
-		ConfluenceCloudID:  strings.TrimSpace(getenv(EnvConfluenceCloudID)),
-		ConfluenceUsername: getenv(EnvConfluenceUsername),
-		ConfluenceToken:    getenv(EnvConfluenceToken),
-		ConfluenceCQL:      getenv(EnvConfluenceCQL),
-		OnyxBaseURL:        strings.TrimRight(getenv(EnvOnyxBaseURL), "/"),
-		OnyxAPIKey:         getenv(EnvOnyxAPIKey),
-		OnyxIngestionPath:  getenv(EnvOnyxIngestionPath),
-		HTTPTimeout:        30 * time.Second,
+		ConfluenceAttachments:        true,
+		ConfluenceAttachmentMaxBytes: 25 << 20,
+		ConfluenceAttachmentMaxChars: 100_000,
+		ConfluenceBaseURL:            strings.TrimRight(getenv(EnvConfluenceBaseURL), "/"),
+		ConfluenceAuthType:           strings.ToLower(strings.TrimSpace(getenv(EnvConfluenceAuthType))),
+		ConfluenceCloudID:            strings.TrimSpace(getenv(EnvConfluenceCloudID)),
+		ConfluenceUsername:           getenv(EnvConfluenceUsername),
+		ConfluenceToken:              getenv(EnvConfluenceToken),
+		ConfluenceCQL:                getenv(EnvConfluenceCQL),
+		OnyxBaseURL:                  strings.TrimRight(getenv(EnvOnyxBaseURL), "/"),
+		OnyxAPIKey:                   getenv(EnvOnyxAPIKey),
+		OnyxIngestionPath:            getenv(EnvOnyxIngestionPath),
+		HTTPTimeout:                  30 * time.Second,
+	}
+
+	switch strings.ToLower(strings.TrimSpace(getenv(EnvConfluenceAttachments))) {
+	case "", "on", "true", "1", "yes":
+		cfg.ConfluenceAttachments = true
+	case "off", "false", "0", "no":
+		cfg.ConfluenceAttachments = false
+	default:
+		return Config{}, fmt.Errorf("%s must be on or off", EnvConfluenceAttachments)
+	}
+	if raw := getenv(EnvConfluenceAttachmentTypes); raw != "" {
+		var types []string
+		for t := range strings.SplitSeq(raw, ",") {
+			if t = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(t, "."))); t != "" {
+				types = append(types, t)
+			}
+		}
+		if len(types) == 0 {
+			return Config{}, fmt.Errorf("%s must name at least one extension", EnvConfluenceAttachmentTypes)
+		}
+		cfg.ConfluenceAttachmentTypes = types
+	}
+	if raw := getenv(EnvConfluenceAttachmentMaxB); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("%s must be a positive integer (bytes)", EnvConfluenceAttachmentMaxB)
+		}
+		cfg.ConfluenceAttachmentMaxBytes = n
+	}
+	if raw := getenv(EnvConfluenceAttachmentMaxCh); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("%s must be a positive integer", EnvConfluenceAttachmentMaxCh)
+		}
+		cfg.ConfluenceAttachmentMaxChars = n
 	}
 
 	if raw := getenv(EnvHTTPTimeout); raw != "" {

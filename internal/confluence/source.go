@@ -14,7 +14,10 @@ import (
 // absorbing second-level ordering ties and index skew before stopping.
 const scanGrace = time.Minute
 
-var orderByRE = regexp.MustCompile(`(?i)\border\s+by\b`)
+var (
+	orderByRE  = regexp.MustCompile(`(?i)\border\s+by\b`)
+	typePageRE = regexp.MustCompile(`(?i)\btype\s*=\s*page\b`)
+)
 
 // Source streams Confluence pages matching a CQL query as Onyx documents.
 // It implements ingest.Source (in internal/ingest) structurally; importing
@@ -33,6 +36,10 @@ type Source struct {
 	// cursorHook, when set, is invoked after each fetched batch with the
 	// _links.next a future run may resume from.
 	cursorHook func(cursor string)
+	// attachments gates the attachment second stream; see SetAttachments
+	// and streamAttachments. Zero value = disabled.
+	attachments AttachmentOptions
+	attachSet   bool
 }
 
 // NewSource creates a Source over client for cql. pageSize<=0 defaults to
@@ -87,6 +94,16 @@ func incrementalCQL(cql string) (string, bool) {
 // anyway, and a batch with no new pages ends the stream — belt and braces
 // against the index shifting under a live search.
 func (s *Source) Stream(ctx context.Context, emit func(onyx.Document) error) error {
+	if err := s.streamPages(ctx, emit); err != nil {
+		return err
+	}
+	if s.attachSet && s.attachments.Enabled {
+		return s.streamAttachments(ctx, emit)
+	}
+	return nil
+}
+
+func (s *Source) streamPages(ctx context.Context, emit func(onyx.Document) error) error {
 	pageSize := s.pageSize
 	if pageSize <= 0 {
 		pageSize = 50
