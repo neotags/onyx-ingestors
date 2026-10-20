@@ -15,6 +15,28 @@ import (
 type State struct {
 	Source   string    `json:"source"`
 	LastSync time.Time `json:"last_sync"`
+	// Resume, when set, marks a run that was interrupted mid-stream:
+	// NextURL is the cursor at which the next run with a matching CQL
+	// scope and window may continue. A clean completion clears it.
+	Resume *ResumeState `json:"resume,omitempty"`
+}
+
+// ResumeState is a pagination cursor plus the query context it belongs
+// to. Both must match the upcoming run exactly — a cursor from another
+// CQL or window would silently skip or duplicate pages.
+type ResumeState struct {
+	// CQL is the base query as configured (before incremental rewrites).
+	CQL string `json:"cql"`
+	// Since is the incremental window start, zero for full syncs.
+	Since time.Time `json:"since,omitempty"`
+	// NextURL is the source-specific cursor (for Confluence, the
+	// site-relative _links.next) to resume from.
+	NextURL string `json:"next_url"`
+}
+
+// ValidFor reports whether r may resume a run with this CQL and window.
+func (r *ResumeState) ValidFor(cql string, since time.Time) bool {
+	return r.CQL == cql && r.Since.Equal(since) && r.NextURL != ""
 }
 
 // LoadState reads the sync checkpoint at path. A missing file is not an

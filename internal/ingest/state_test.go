@@ -34,6 +34,26 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStateResumeRoundTripAndValidity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	since := time.Date(2026, 10, 18, 22, 0, 0, 0, time.UTC)
+	want := State{
+		Source:   "confluence",
+		LastSync: since,
+		Resume:   &ResumeState{CQL: "type=page", Since: since, NextURL: "/rest/api/content/search?cursor=abc"},
+	}
+
+	require.NoError(t, SaveState(path, want))
+	got, err := LoadState(path)
+	require.NoError(t, err)
+	require.NotNil(t, got.Resume)
+	assert.Equal(t, want.Resume, got.Resume)
+
+	assert.True(t, got.Resume.ValidFor("type=page", since))
+	assert.False(t, got.Resume.ValidFor("type=page AND space=X", since), "different CQL must not resume")
+	assert.False(t, got.Resume.ValidFor("type=page", since.Add(time.Hour)), "different window must not resume")
+}
+
 func TestLoadStateCorrupt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	require.NoError(t, os.WriteFile(path, []byte("not json"), 0o600))

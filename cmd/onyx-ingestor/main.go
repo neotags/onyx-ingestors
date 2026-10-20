@@ -89,6 +89,8 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 
 	var source ingest.Source
 	var opts ingest.Options
+	var st ingest.State
+	var truncated bool
 	var incremental bool
 	var stateFile string
 
@@ -132,17 +134,12 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 			return err
 		}
 		slog.Info("confluence auth", "mode", mode.String())
-		if total, cerr := client.CountPages(ctx, cfg.ConfluenceCQL); cerr != nil {
-			slog.Warn("could not count confluence pages; progress will run without a total", "error", cerr)
-		} else {
-			slog.Info("confluence pages matching CQL", "cql", cfg.ConfluenceCQL, "total", total)
-		}
 		since := time.Time{}
+		st, err = ingest.LoadState(stateFile)
+		if err != nil {
+			return err
+		}
 		if incremental {
-			st, err := ingest.LoadState(stateFile)
-			if err != nil {
-				return err
-			}
 			if st.Source == sourceName && !st.LastSync.IsZero() {
 				since = st.LastSync.Add(-*lookback)
 				slog.Info("incremental sync", "since", since.Format(time.RFC3339), "state_file", stateFile)
@@ -155,8 +152,35 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 		} else {
 			source = confluence.NewIncrementalSource(client, cfg.ConfluenceCQL, since, *pageSize, *maxPages)
 		}
+		// A --max-pages run is intentionally truncated: the resume marker
+		// must survive completion cleanup, and no checkpoint advances.
+		truncated = *maxPages > 0
 		opts.DryRun = *dryRun
 		opts.MaxFailures = *maxFailures
+		if !opts.DryRun {
+			resumable, ok := source.(ingest.ResumableSource)
+			if ok {
+				if st.Resume != nil && st.Source == sourceName && st.Resume.ValidFor(cfg.ConfluenceCQL, since) {
+					resumable.ResumeFrom(st.Resume.NextURL)
+					slog.Info("resuming from saved cursor", "state_file", stateFile)
+				}
+				resumable.SetCursorHook(func(next string) {
+					if next == "" {
+						return
+					}
+					st.Source = sourceName
+					st.Resume = &ingest.ResumeState{CQL: cfg.ConfluenceCQL, Since: since, NextURL: next}
+					if serr := ingest.SaveState(stateFile, st); serr != nil {
+						slog.Warn("could not save resume checkpoint", "state_file", stateFile, "error", serr)
+					}
+				})
+			}
+		}
+		if total, cerr := client.CountPages(ctx, cfg.ConfluenceCQL); cerr != nil {
+			slog.Warn("could not count confluence pages; progress will run without a total", "error", cerr)
+		} else {
+			slog.Info("confluence pages matching CQL", "cql", cfg.ConfluenceCQL, "total", total)
+		}
 	default:
 		usage()
 		return fmt.Errorf("unsupported source %q: only confluence is implemented", sourceName)
@@ -176,13 +200,28 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 	// tolerated-but-failed document leaves the old timestamp, so the next
 	// run re-scans the whole window (cheap: unchanged pages are skipped by
 	// Onyx via doc_updated_at).
-	if err == nil && incremental && !opts.DryRun {
+	if err == nil && incremental && !opts.DryRun && !truncated {
 		if stats.Failed > 0 {
-			slog.Warn("documents failed; checkpoint not advanced",
+			slog.Warn("documents failed; checkpoint not advanced, resume cursor cleared",
 				"failed", stats.Failed, "state_file", stateFile)
+			if st.Resume != nil {
+				st.Resume = nil
+				if serr := ingest.SaveState(stateFile, st); serr != nil {
+					return fmt.Errorf("save sync checkpoint: %w", serr)
+				}
+			}
 			return nil
 		}
 		if serr := ingest.SaveState(stateFile, ingest.State{Source: sourceName, LastSync: syncStarted}); serr != nil {
+			return fmt.Errorf("save sync checkpoint: %w", serr)
+		}
+	}
+	// A completed full sync clears any resume marker while preserving the
+	// incremental timestamp; a crashed run leaves the marker in place so
+	// the next run resumes mid-stream.
+	if err == nil && !incremental && !opts.DryRun && !truncated && st.Resume != nil {
+		st.Resume = nil
+		if serr := ingest.SaveState(stateFile, st); serr != nil {
 			return fmt.Errorf("save sync checkpoint: %w", serr)
 		}
 	}

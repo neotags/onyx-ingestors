@@ -19,6 +19,19 @@ type Source interface {
 	Stream(ctx context.Context, emit func(onyx.Document) error) error
 }
 
+// ResumableSource can pause and resume pagination mid-stream so an
+// interrupted run continues instead of re-scanning. Callers type-assert
+// Source values against it.
+type ResumableSource interface {
+	Source
+	// ResumeFrom positions the next Stream call at cursor instead of the
+	// start. The cursor must have been produced by the same query scope.
+	ResumeFrom(cursor string)
+	// SetCursorHook registers a callback invoked after each successfully
+	// fetched batch with the cursor a future run may resume from.
+	SetCursorHook(hook func(cursor string))
+}
+
 // Sink ingests a single Onyx document.
 type Sink interface {
 	Ingest(ctx context.Context, doc onyx.Document) error

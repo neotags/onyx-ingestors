@@ -81,6 +81,13 @@ How it works:
   `--max-failures`, 0 disables) are logged and skipped without aborting
   the run; any failure leaves the checkpoint unchanged so the next
   incremental run re-scans them.
+- Interruption resilience: the state file also holds a resume cursor
+  refreshed after every fetched batch. A run cut short (crash, signal,
+  API outage) continues from that cursor on the next invocation when the
+  CQL and incremental window still match; a stale/rejected cursor falls
+  back to a full rescan, and a clean completion clears the cursor.
+  `--max-pages` runs are treated as intentionally truncated: the cursor
+  survives so a follow-up run resumes, and no checkpoint advances.
 - If your `--cql` already contains `ORDER BY`, ordering is left untouched
   and early stop is disabled (filtering still applies).
 
