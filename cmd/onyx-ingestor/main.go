@@ -60,6 +60,19 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 
+// mapFromStrings converts a config allow-list into the set the source
+// expects; nil input returns nil, meaning "package defaults".
+func mapFromStrings(in []string) map[string]bool {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(in))
+	for _, t := range in {
+		out[t] = true
+	}
+	return out
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `onyx-ingestor syncs external content into Onyx.
 
@@ -153,10 +166,24 @@ func runSync(ctx context.Context, sourceName string, args []string) error {
 				slog.Info("incremental sync: no prior checkpoint, running a full sync to bootstrap", "state_file", stateFile)
 			}
 		}
+		var src *confluence.Source
 		if since.IsZero() {
-			source = confluence.NewSource(client, cfg.ConfluenceCQL, *pageSize, *maxPages)
+			src = confluence.NewSource(client, cfg.ConfluenceCQL, *pageSize, *maxPages)
 		} else {
-			source = confluence.NewIncrementalSource(client, cfg.ConfluenceCQL, since, *pageSize, *maxPages)
+			src = confluence.NewIncrementalSource(client, cfg.ConfluenceCQL, since, *pageSize, *maxPages)
+		}
+		source = src
+		src.SetAttachments(confluence.AttachmentOptions{
+			Enabled:  cfg.ConfluenceAttachments,
+			Types:    mapFromStrings(cfg.ConfluenceAttachmentTypes),
+			MaxBytes: int64(cfg.ConfluenceAttachmentMaxBytes),
+			MaxChars: cfg.ConfluenceAttachmentMaxChars,
+		})
+		if cfg.ConfluenceAttachments {
+			slog.Info("confluence attachments enabled",
+				"types", cfg.ConfluenceAttachmentTypes,
+				"max_bytes", cfg.ConfluenceAttachmentMaxBytes,
+				"max_chars", cfg.ConfluenceAttachmentMaxChars)
 		}
 		// A --max-pages run is intentionally truncated: the resume marker
 		// must survive completion cleanup, and no checkpoint advances.
