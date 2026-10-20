@@ -231,7 +231,7 @@ func TestSearchPagesRetries429HonoringRetryAfter(t *testing.T) {
 	noSleep(t)
 	var attempts int
 	var sawRetryAfter bool
-	hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	hc := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		attempts++
 		if attempts < 3 {
 			sawRetryAfter = true
