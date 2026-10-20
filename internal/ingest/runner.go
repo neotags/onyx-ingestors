@@ -64,6 +64,12 @@ type Stats struct {
 func Run(ctx context.Context, source Source, sink Sink, opts Options) (Stats, error) {
 	var stats Stats
 	err := source.Stream(ctx, func(doc onyx.Document) error {
+		// Shutdown is not a document failure: abort immediately. Letting
+		// canceled ingest calls flow into the sink would burn the failure
+		// budget and misreport a signal as N failed documents.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		stats.Seen++
 		if opts.DryRun {
 			stats.Skipped++
@@ -71,6 +77,9 @@ func Run(ctx context.Context, source Source, sink Sink, opts Options) (Stats, er
 			return nil
 		}
 		if err := sink.Ingest(ctx, doc); err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
 			stats.Failed++
 			if stats.Failed <= opts.MaxFailures {
 				slog.Error("document failed; continuing",

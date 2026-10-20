@@ -123,6 +123,32 @@ func TestRunZeroBudgetAbortsOnFirstFailure(t *testing.T) {
 	require.Equal(t, stats.Failed, 1)
 }
 
+// cancelSink cancels the context after the first document, emulating
+// SIGINT mid-run: the run must abort immediately with zero fake failures.
+type cancelSink struct {
+	cancel context.CancelFunc
+	tried  int
+}
+
+func (c *cancelSink) Ingest(_ context.Context, _ onyx.Document) error {
+	c.tried++
+	c.cancel()
+	return nil
+}
+
+func TestRunAbortsOnContextCancelWithoutFakeFailures(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	source := &fakeSource{docs: docs("a", "b", "c", "d", "e")}
+	sink := &cancelSink{cancel: cancel}
+
+	stats, err := Run(ctx, source, sink, Options{MaxFailures: 10})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, Stats{Seen: 1, Ingested: 1}, stats)
+	assert.Equal(t, 1, sink.tried, "no sink call should happen after cancellation")
+}
+
 func TestRunSourceError(t *testing.T) {
 	source := &fakeSource{docs: docs("a"), err: errors.New("fetch failed")}
 	sink := &fakeSink{}
