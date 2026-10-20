@@ -13,7 +13,6 @@ interface; the pipeline in `internal/ingest` is source-agnostic.
 
 ## Conventions
 
-- Stdlib-first: `flag` subcommands, `log/slog`, `net/http`; only prod dep is `godotenv` — do not add framework deps. Tests use `stretchr/testify`.
 - One package per source under `internal/`; register new sources as a `case` in `cmd/onyx-ingestor/main.go`.
 - Config is env-only, validated up front in `internal/config`; report missing vars by name only, never values.
 - Unit tests use fake HTTP transports (`http.RoundTripper`); never hit live APIs from tests.
