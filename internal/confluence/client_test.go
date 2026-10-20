@@ -2,11 +2,13 @@ package confluence
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -203,6 +205,7 @@ func TestSearchPagesLimitClamp(t *testing.T) {
 }
 
 func TestSearchPagesHTTPError(t *testing.T) {
+	noSleep(t)
 	hc := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return cannedResponse(http.StatusInternalServerError, "boom"), nil
 	})}
@@ -214,6 +217,106 @@ func TestSearchPagesHTTPError(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "500")
 	assert.NotContains(t, err.Error(), "secret", "error must not leak the token")
+}
+
+// noSleep disables retry backoff in tests.
+func noSleep(t *testing.T) {
+	t.Helper()
+	orig := sleepCtx
+	sleepCtx = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() { sleepCtx = orig })
+}
+
+func TestSearchPagesRetries429HonoringRetryAfter(t *testing.T) {
+	noSleep(t)
+	var attempts int
+	var sawRetryAfter bool
+	hc := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			sawRetryAfter = true
+			resp := cannedResponse(http.StatusTooManyRequests, "rate limited")
+			resp.Header.Set("Retry-After", "1")
+			return resp, nil
+		}
+		return cannedResponse(http.StatusOK, searchJSON), nil
+	})}
+	c, err := NewClient(Options{BaseURL: "https://ex.atlassian.net/wiki", Auth: basicAuth()}, hc)
+	require.NoError(t, err)
+
+	res, err := c.SearchPages(context.Background(), "type=page", 0, 50)
+	require.NoError(t, err)
+	assert.Equal(t, 3, attempts)
+	assert.True(t, sawRetryAfter)
+	require.Len(t, res.Results, 1)
+}
+
+func TestSearchPagesHalvesLimitOnServerError(t *testing.T) {
+	noSleep(t)
+	var limits []string
+	hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		limits = append(limits, r.URL.Query().Get("limit"))
+		if r.URL.Query().Get("limit") == "100" {
+			return cannedResponse(http.StatusGatewayTimeout, "gateway timeout"), nil
+		}
+		return cannedResponse(http.StatusOK, searchJSON), nil
+	})}
+	c, err := NewClient(Options{BaseURL: "https://ex.atlassian.net/wiki", Auth: basicAuth()}, hc)
+	require.NoError(t, err)
+
+	_, err = c.SearchPages(context.Background(), "type=page", 0, 100)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"100", "50"}, limits)
+}
+
+func TestSearchPagesRetryExhausted(t *testing.T) {
+	noSleep(t)
+	var attempts int
+	hc := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		attempts++
+		return cannedResponse(http.StatusInternalServerError, "boom"), nil
+	})}
+	c, err := NewClient(Options{BaseURL: "https://confluence.example.com", Auth: basicAuth()}, hc)
+	require.NoError(t, err)
+
+	_, err = c.SearchPages(context.Background(), "type=page", 0, minSearchLimit)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "500")
+	assert.Equal(t, maxRequestAttempts, attempts)
+}
+
+func TestCountPagesRetriesTransportError(t *testing.T) {
+	noSleep(t)
+	var attempts int
+	hc := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, errors.New("connection reset")
+		}
+		return cannedResponse(http.StatusOK, `{"totalSize": 42}`), nil
+	})}
+	c, err := NewClient(Options{BaseURL: "https://ex.atlassian.net/wiki", Auth: basicAuth()}, hc)
+	require.NoError(t, err)
+
+	total, err := c.CountPages(context.Background(), "type=page")
+	require.NoError(t, err)
+	assert.Equal(t, 42, total)
+}
+
+func TestHalveLimitParam(t *testing.T) {
+	next, ok := halveLimitParam("https://x/wiki/rest/api/content/search?cql=a&limit=100")
+	assert.True(t, ok)
+	assert.Contains(t, next, "limit=50")
+
+	next, ok = halveLimitParam("https://x/wiki/rest/api/content/search?cql=a&limit=10")
+	assert.True(t, ok)
+	assert.Contains(t, next, "limit=5")
+
+	_, ok = halveLimitParam("https://x/wiki/rest/api/content/search?cql=a&limit=5")
+	assert.False(t, ok, "already at the floor")
+
+	_, ok = halveLimitParam("https://x/wiki/rest/api/content/search?cql=a")
+	assert.False(t, ok, "no limit param")
 }
 
 // TestSearchPagesFallsBackToEnvelopeBase mirrors Confluence Cloud behavior:

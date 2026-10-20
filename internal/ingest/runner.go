@@ -19,6 +19,19 @@ type Source interface {
 	Stream(ctx context.Context, emit func(onyx.Document) error) error
 }
 
+// ResumableSource can pause and resume pagination mid-stream so an
+// interrupted run continues instead of re-scanning. Callers type-assert
+// Source values against it.
+type ResumableSource interface {
+	Source
+	// ResumeFrom positions the next Stream call at cursor instead of the
+	// start. The cursor must have been produced by the same query scope.
+	ResumeFrom(cursor string)
+	// SetCursorHook registers a callback invoked after each successfully
+	// fetched batch with the cursor a future run may resume from.
+	SetCursorHook(hook func(cursor string))
+}
+
 // Sink ingests a single Onyx document.
 type Sink interface {
 	Ingest(ctx context.Context, doc onyx.Document) error
@@ -27,6 +40,10 @@ type Sink interface {
 // Options controls one ingestion run.
 type Options struct {
 	DryRun bool
+	// MaxFailures tolerates failed documents: up to MaxFailures sink
+	// failures are logged and skipped before the run aborts. Values <= 0
+	// abort on the first failure.
+	MaxFailures int
 }
 
 // progressEvery controls how often in-run progress lines are logged.
@@ -41,10 +58,18 @@ type Stats struct {
 }
 
 // Run streams documents from source into sink until the stream ends, the
-// sink fails, or the context is canceled. The first failure aborts the run.
+// failure budget is exhausted, or the context is canceled. Skipped
+// failures count toward Stats.Failed so callers can refuse to advance
+// checkpoints on dirty runs.
 func Run(ctx context.Context, source Source, sink Sink, opts Options) (Stats, error) {
 	var stats Stats
 	err := source.Stream(ctx, func(doc onyx.Document) error {
+		// Shutdown is not a document failure: abort immediately. Letting
+		// canceled ingest calls flow into the sink would burn the failure
+		// budget and misreport a signal as N failed documents.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		stats.Seen++
 		if opts.DryRun {
 			stats.Skipped++
@@ -52,7 +77,17 @@ func Run(ctx context.Context, source Source, sink Sink, opts Options) (Stats, er
 			return nil
 		}
 		if err := sink.Ingest(ctx, doc); err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
 			stats.Failed++
+			if stats.Failed <= opts.MaxFailures {
+				slog.Error("document failed; continuing",
+					"doc_id", doc.ID, "title", doc.Title,
+					"failures", stats.Failed, "budget", opts.MaxFailures,
+					"error", err)
+				return nil
+			}
 			return fmt.Errorf("document %q (%q): %w", doc.ID, doc.Title, err)
 		}
 		stats.Ingested++

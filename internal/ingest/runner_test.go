@@ -79,6 +79,76 @@ func TestRunSinkErrorAborts(t *testing.T) {
 	assert.Equal(t, Stats{Seen: 2, Ingested: 1, Failed: 1}, stats)
 }
 
+// failingSink fails on the named doc IDs, succeeding otherwise.
+type failingSink struct {
+	fail  map[string]bool
+	tried int
+}
+
+func (f *failingSink) Ingest(_ context.Context, doc onyx.Document) error {
+	f.tried++
+	if f.fail[doc.ID] {
+		return errors.New("onyx down")
+	}
+	return nil
+}
+
+func TestRunToleratesFailuresWithinBudget(t *testing.T) {
+	source := &fakeSource{docs: docs("a", "b", "c", "d", "e")}
+	sink := &failingSink{fail: map[string]bool{"b": true, "d": true}}
+
+	stats, err := Run(context.Background(), source, sink, Options{MaxFailures: 2})
+	require.NoError(t, err)
+	assert.Equal(t, Stats{Seen: 5, Ingested: 3, Failed: 2}, stats)
+	assert.Equal(t, 5, sink.tried, "stream must continue past tolerated failures")
+}
+
+func TestRunAbortsWhenBudgetExhausted(t *testing.T) {
+	source := &fakeSource{docs: docs("a", "b", "c", "d", "e")}
+	sink := &failingSink{fail: map[string]bool{"b": true, "d": true}}
+
+	stats, err := Run(context.Background(), source, sink, Options{MaxFailures: 1})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "onyx down")
+	assert.Equal(t, Stats{Seen: 4, Ingested: 2, Failed: 2}, stats)
+	assert.Equal(t, 4, sink.tried, "run must abort once the budget is exhausted")
+}
+
+func TestRunZeroBudgetAbortsOnFirstFailure(t *testing.T) {
+	source := &fakeSource{docs: docs("a", "b", "c")}
+	sink := &failingSink{fail: map[string]bool{"b": true}}
+
+	stats, err := Run(context.Background(), source, sink, Options{MaxFailures: 0})
+	require.Error(t, err)
+	require.Equal(t, stats.Failed, 1)
+}
+
+// cancelSink cancels the context after the first document, emulating
+// SIGINT mid-run: the run must abort immediately with zero fake failures.
+type cancelSink struct {
+	cancel context.CancelFunc
+	tried  int
+}
+
+func (c *cancelSink) Ingest(_ context.Context, _ onyx.Document) error {
+	c.tried++
+	c.cancel()
+	return nil
+}
+
+func TestRunAbortsOnContextCancelWithoutFakeFailures(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	source := &fakeSource{docs: docs("a", "b", "c", "d", "e")}
+	sink := &cancelSink{cancel: cancel}
+
+	stats, err := Run(ctx, source, sink, Options{MaxFailures: 10})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, Stats{Seen: 1, Ingested: 1}, stats)
+	assert.Equal(t, 1, sink.tried, "no sink call should happen after cancellation")
+}
+
 func TestRunSourceError(t *testing.T) {
 	source := &fakeSource{docs: docs("a"), err: errors.New("fetch failed")}
 	sink := &fakeSink{}

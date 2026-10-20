@@ -27,6 +27,12 @@ type Source struct {
 	// since, when non-zero, filters out pages last modified at or before
 	// it (exact comparison on version.when) and stops pagination early.
 	since time.Time
+	// resumeNext, when set, positions the next Stream at this _links.next
+	// cursor instead of the first batch (see ingest.ResumableSource).
+	resumeNext string
+	// cursorHook, when set, is invoked after each fetched batch with the
+	// _links.next a future run may resume from.
+	cursorHook func(cursor string)
 }
 
 // NewSource creates a Source over client for cql. pageSize<=0 defaults to
@@ -45,6 +51,19 @@ func NewIncrementalSource(client *Client, cql string, since time.Time, pageSize,
 	s := NewSource(client, cql, pageSize, maxPages)
 	s.since = since
 	return s
+}
+
+// ResumeFrom positions the next Stream call at the given _links.next
+// cursor. The cursor must come from the same CQL scope and time window;
+// it is consumed by one Stream call.
+func (s *Source) ResumeFrom(cursor string) {
+	s.resumeNext = cursor
+}
+
+// SetCursorHook registers the callback reporting the resume cursor after
+// each successfully fetched batch.
+func (s *Source) SetCursorHook(hook func(cursor string)) {
+	s.cursorHook = hook
 }
 
 // incrementalCQL returns the query to run and whether it is ordered by
@@ -76,7 +95,9 @@ func (s *Source) Stream(ctx context.Context, emit func(onyx.Document) error) err
 	if !s.since.IsZero() {
 		cql, earlyStop = incrementalCQL(cql)
 	}
-	next := ""
+	next := s.resumeNext
+	s.resumeNext = ""
+	resuming := next != ""
 	seenIDs := make(map[string]struct{})
 	for pageNum := 0; ; pageNum++ {
 		if s.maxPages > 0 && pageNum >= s.maxPages {
@@ -90,6 +111,15 @@ func (s *Source) Stream(ctx context.Context, emit func(onyx.Document) error) err
 			res, err = s.client.SearchPageURL(ctx, next)
 		}
 		if err != nil {
+			if resuming && pageNum == 0 {
+				// A stale or expired cursor must not wedge every future
+				// run: a full rescan is always correct, just slower.
+				slog.Warn("resume cursor rejected by confluence; restarting from the beginning",
+					"error", err)
+				next, resuming = "", false
+				pageNum--
+				continue
+			}
 			return fmt.Errorf("fetch confluence pages: %w", err)
 		}
 		newPages := 0
@@ -110,6 +140,9 @@ func (s *Source) Stream(ctx context.Context, emit func(onyx.Document) error) err
 			}
 		}
 		next = res.Links.Next
+		if s.cursorHook != nil {
+			s.cursorHook(next)
+		}
 		if len(res.Results) == 0 || next == "" {
 			return nil
 		}

@@ -27,6 +27,7 @@ func TestLoadValid(t *testing.T) {
 	cfg, err := Load(getenvFrom(validEnv()))
 	require.NoError(t, err)
 	assert.Equal(t, 30*time.Second, cfg.HTTPTimeout)
+	assert.Equal(t, 2*time.Minute, cfg.OnyxHTTPTimeout)
 	assert.Equal(t, 12, cfg.OnyxCCPairID)
 	assert.False(t, strings.HasSuffix(cfg.ConfluenceBaseURL, "/"), "base URL keeps trailing slash")
 	assert.Empty(t, cfg.ConfluenceAuthType)
@@ -71,8 +72,23 @@ func TestLoadTimeout(t *testing.T) {
 	cfg, err := Load(getenvFrom(env))
 	require.NoError(t, err)
 	assert.Equal(t, 5*time.Second, cfg.HTTPTimeout)
+	assert.Equal(t, 5*time.Second, cfg.OnyxHTTPTimeout,
+		"explicit HTTP_TIMEOUT keeps governing ingestion for backward compatibility")
 
 	env[EnvHTTPTimeout] = "soon"
+	_, err = Load(getenvFrom(env))
+	assert.Error(t, err)
+}
+
+func TestLoadOnyxTimeoutOverride(t *testing.T) {
+	env := validEnv()
+	env[EnvOnyxHTTPTimeout] = "300s"
+	cfg, err := Load(getenvFrom(env))
+	require.NoError(t, err)
+	assert.Equal(t, 5*time.Minute, cfg.OnyxHTTPTimeout)
+	assert.Equal(t, 30*time.Second, cfg.HTTPTimeout, "source fetches keep the short default")
+
+	env[EnvOnyxHTTPTimeout] = "never"
 	_, err = Load(getenvFrom(env))
 	assert.Error(t, err)
 }

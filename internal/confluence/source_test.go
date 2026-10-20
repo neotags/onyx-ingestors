@@ -32,7 +32,7 @@ func pagedTransport() http.RoundTripper {
 			return cannedResponse(http.StatusOK, `{"results": [`+
 				pageJSON("1", "First", "<p>Hello <b>world</b></p>", "https://ex.atlassian.net/wiki", "/x/1", "2024-05-01T10:00:00.000Z")+`,`+
 				pageJSON("2", "Second", "<p>Two</p>", "https://ex.atlassian.net/wiki", "/x/2", "2024-06-01T10:00:00.000Z")+
-				`], "start": 0, "limit": 2, "size": 2, "_links": {"next": "/rest/api/content/rest/api/content/search?start=2"}}`), nil
+				`], "start": 0, "limit": 2, "size": 2, "_links": {"next": "/rest/api/content/search?start=2"}}`), nil
 		default:
 			return cannedResponse(http.StatusOK, `{"results": [`+
 				pageJSON("3", "Third", "<p>Three</p>", "https://ex.atlassian.net/wiki", "/x/3", "2024-07-01T10:00:00.000Z")+
@@ -88,6 +88,63 @@ func TestStreamStopsAtMaxPages(t *testing.T) {
 	assert.Len(t, docs, 2)
 }
 
+// cursorTransport serves batch one at start=0 (with a next link), and
+// batch two either via the next link or a direct cursor request.
+func cursorTransport() http.RoundTripper {
+	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.URL.Query().Get("cursor") == "resume-me" || r.URL.Query().Get("start") == "2":
+			return cannedResponse(http.StatusOK, `{"results": [`+
+				pageJSON("3", "Third", "<p>Three</p>", "https://ex.atlassian.net/wiki", "/x/3", "2024-07-01T10:00:00.000Z")+
+				`], "size": 1, "_links": {}}`), nil
+		default:
+			return cannedResponse(http.StatusOK, `{"results": [`+
+				pageJSON("1", "First", "<p>One</p>", "https://ex.atlassian.net/wiki", "/x/1", "2024-05-01T10:00:00.000Z")+
+				`], "size": 1, "_links": {"next": "/rest/api/content/search?cursor=resume-me&start=2"}}`), nil
+		}
+	})
+}
+
+func TestResumeFromSkipsToSavedCursor(t *testing.T) {
+	src := newTestSource(t, pagedTransport(), 2, 0)
+	var cursors []string
+	src.SetCursorHook(func(next string) { cursors = append(cursors, next) })
+
+	docs := collectDocs(t, src)
+
+	require.Len(t, docs, 3)
+	// The hook fires after each batch: batch 1 reports its next link,
+	// batch 2 (the last) reports "".
+	assert.Equal(t, []string{
+		"/rest/api/content/search?start=2",
+		"",
+	}, cursors)
+
+	resumed := newTestSource(t, cursorTransport(), 2, 0)
+	resumed.ResumeFrom("/rest/api/content/search?cursor=resume-me")
+	resumedDocs := collectDocs(t, resumed)
+	require.Len(t, resumedDocs, 1)
+	assert.Equal(t, "confluence-3", resumedDocs[0].ID)
+}
+
+func TestResumeFromStaleCursorRestartsFromBeginning(t *testing.T) {
+	calls := 0
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Query().Get("cursor") == "expired" {
+			return cannedResponse(http.StatusBadRequest, "invalid cursor"), nil
+		}
+		return cannedResponse(http.StatusOK, `{"results": [], "size": 0, "_links": {}}`), nil
+	})
+	src := newTestSource(t, transport, 2, 0)
+	src.ResumeFrom("/rest/api/content/search?cursor=expired")
+
+	docs := collectDocs(t, src)
+
+	assert.Empty(t, docs)
+	assert.Equal(t, 2, calls, "stale resume must fall back to a fresh scan")
+}
+
 // Reproduces the unstable live index: every request returns the same
 // already-seen pages but keeps serving a next link, so without dedup the
 // stream would loop forever re-ingesting them.
@@ -95,7 +152,7 @@ func TestStreamStopsWhenServerRepeatsResults(t *testing.T) {
 	body := `{"results": [` +
 		pageJSON("1", "First", "<p>One</p>", "https://ex.atlassian.net/wiki", "/x/1", "2024-05-01T10:00:00.000Z") + `,` +
 		pageJSON("2", "Second", "<p>Two</p>", "https://ex.atlassian.net/wiki", "/x/2", "2024-06-01T10:00:00.000Z") +
-		`], "start": 0, "limit": 2, "size": 2, "_links": {"next": "/rest/api/content/rest/api/content/search?start=2"}}`
+		`], "start": 0, "limit": 2, "size": 2, "_links": {"next": "/rest/api/content/search?start=2"}}`
 	transport := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return cannedResponse(http.StatusOK, body), nil
 	})
@@ -116,6 +173,7 @@ func TestStreamPropagatesEmitError(t *testing.T) {
 }
 
 func TestStreamFetchError(t *testing.T) {
+	noSleep(t)
 	transport := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return cannedResponse(http.StatusBadGateway, "bad gateway"), nil
 	})

@@ -71,9 +71,23 @@ How it works:
 - Pagination follows the `_links.next` cursor verbatim. Atlassian's
   scoped-token gateway (`CONFLUENCE_AUTH_TYPE=scoped`) ignores the `start`
   offset in CQL search, so offsets are never computed client-side.
+- Confluence API calls retry up to 5 times: `Retry-After` is honored on
+  429, exponential backoff covers 5xx and transport errors, and on a
+  server error the page size is halved (floor 5) before retrying.
 - The checkpoint advances only when the whole run succeeds, so a failed
   page or network error triggers a larger (but still correct) re-scan next
   time. `--dry-run` never touches the checkpoint.
+- Individual documents that fail to ingest (default budget: 10, tune with
+  `--max-failures`, 0 disables) are logged and skipped without aborting
+  the run; any failure leaves the checkpoint unchanged so the next
+  incremental run re-scans them.
+- Interruption resilience: the state file also holds a resume cursor
+  refreshed after every fetched batch. A run cut short (crash, signal,
+  API outage) continues from that cursor on the next invocation when the
+  CQL and incremental window still match; a stale/rejected cursor falls
+  back to a full rescan, and a clean completion clears the cursor.
+  `--max-pages` runs are treated as intentionally truncated: the cursor
+  survives so a follow-up run resumes, and no checkpoint advances.
 - If your `--cql` already contains `ORDER BY`, ordering is left untouched
   and early stop is disabled (filtering still applies).
 
@@ -107,7 +121,8 @@ variables already set in the real environment take precedence.
 | `ONYX_API_KEY`         | yes      | Onyx API key (sent as `Authorization: Bearer ...`). |
 | `ONYX_CC_PAIR_ID`      | yes      | Integer ID of the Onyx connector/credential pair to ingest into. |
 | `ONYX_INGESTION_PATH`  | no       | Ingestion endpoint path (default `/onyx-api/ingestion`). Set to your deployment's mount path when it differs, e.g. `/api/ingestion` behind the chart nginx (it only forwards `/api/*`). |
-| `HTTP_TIMEOUT`         | no       | HTTP timeout as Go duration (default `30s`). |
+| `HTTP_TIMEOUT`         | no       | HTTP timeout for Confluence fetches, as a Go duration (default `30s`). |
+| `ONYX_HTTP_TIMEOUT`    | no       | HTTP timeout per ingestion POST (default `2m`); ingestion does server-side extraction/chunking/embedding and can be slow on a loaded Onyx. If `HTTP_TIMEOUT` is set explicitly and this is not, ingestion inherits `HTTP_TIMEOUT` (previous behavior). |
 
 Copy `.env.example` to `.env` for a local template; `.env` is git-ignored
 and picked up automatically, so `source .env` is not needed.
